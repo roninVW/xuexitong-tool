@@ -218,6 +218,8 @@ private fun AppNav(graph: AppGraph, settings: AppSettings) {
     )
 
     val cs = MaterialTheme.colorScheme
+    // 网页顶部栏与主程序同色：主题跟随用户设置，不一定等于系统
+    val webDark = settings.darkMode ?: isSystemInDarkTheme()
     val wallpaper = LocalWallpaper.current
     val shell = if (wallpaper.active) Modifier else Modifier.background(cs.surface)
     Box(Modifier.fillMaxSize().then(shell)) {
@@ -258,7 +260,7 @@ private fun AppNav(graph: AppGraph, settings: AppSettings) {
                             flameEnabled = settings.flameEffect,
                             showQuote = settings.showQuote,
                             // 应用内网页 = 独立原生 Activity（WebView 不进 Compose，避免测量/触摸被干扰）
-                            onOpenWeb = { task -> openWebPage(context, task.url, task.title) },
+                            onOpenWeb = { task -> openWebPage(context, task.url, task.title, webDark) },
                             // 卡片上的「学习通」= 跳学习通 App（失败会回落到应用内页面）
                             onJump = { task ->
                                 scope.launch {
@@ -267,7 +269,7 @@ private fun AppNav(graph: AppGraph, settings: AppSettings) {
                                         graph.source.resolveOpenUrl(task.key, task.url)
                                     }.getOrDefault(task.url)
                                     openInChaoxing(context, target, task.title) { url ->
-                                        openWebPage(context, url, task.title)
+                                        openWebPage(context, url, task.title, webDark)
                                     }
                                 }
                             },

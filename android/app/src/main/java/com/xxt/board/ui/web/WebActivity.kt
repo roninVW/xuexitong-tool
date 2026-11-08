@@ -31,6 +31,7 @@ import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
@@ -38,9 +39,11 @@ import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import android.app.AlertDialog
+import androidx.core.content.res.ResourcesCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import com.xxt.board.R
 import com.xxt.board.data.CookieVault
 import com.xxt.board.injectChaoxingCookies
 import org.json.JSONObject
@@ -72,6 +75,9 @@ class WebActivity : ComponentActivity() {
         const val EXTRA_TITLE = "title"
         const val EXTRA_REFERER = "referer"
 
+        /** 调用方把当前主题（跟随设置，不一定等于系统）传进来，顶栏才能同色 */
+        const val EXTRA_DARK = "dark"
+
         private const val TAG = "XXTWeb"
         private const val DEFAULT_REFERER = "https://mooc1.chaoxing.com/"
 
@@ -98,15 +104,23 @@ class WebActivity : ComponentActivity() {
     private var popupDialog: android.app.Dialog? = null
     private var currentUrl: String = ""
 
-    private val night: Boolean by lazy {
+    /** 与主程序一致的深浅色；由调用方传入，取不到才看系统设置 */
+    private var darkMode: Boolean = false
+
+    private fun systemNight(): Boolean =
         resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK ==
             Configuration.UI_MODE_NIGHT_YES
-    }
 
-    private val paper: Int get() = if (night) 0xFF151517.toInt() else 0xFFF6F0E2.toInt()
-    private val card: Int get() = if (night) 0xFF1E1E21.toInt() else 0xFFFFFDF7.toInt()
-    private val ink: Int get() = if (night) 0xFFEDEDEF.toInt() else 0xFF2B2419.toInt()
+    private val paper: Int get() = if (darkMode) 0xFF151517.toInt() else 0xFFF6F0E2.toInt()
+    private val card: Int get() = if (darkMode) 0xFF1E1E21.toInt() else 0xFFFFFDF7.toInt()
+    private val ink: Int get() = if (darkMode) 0xFFEDEDEF.toInt() else 0xFF2B2419.toInt()
     private val accent: Int get() = 0xFFC4763F.toInt()
+
+    /** 次要图标：与主程序顶栏右侧图标一致，墨色 62% */
+    private val inkSoft: Int get() = (ink and 0x00FFFFFF) or 0x9E000000.toInt()
+
+    /** 顶栏下沿细线：墨色 10% */
+    private val hairline: Int get() = (ink and 0x00FFFFFF) or 0x1A000000
 
     private val filePicker = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -130,6 +144,14 @@ class WebActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
+
+        darkMode = intent.getBooleanExtra(EXTRA_DARK, systemNight())
+        // 边到边后 root 上下有 padding，状态栏 / 导航栏那两条会露出窗口底色，统一刷成纸色
+        window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(paper))
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightStatusBars = !darkMode
+            isAppearanceLightNavigationBars = !darkMode
+        }
 
         val url = intent.getStringExtra(EXTRA_URL).orEmpty()
         val title = intent.getStringExtra(EXTRA_TITLE).orEmpty()
@@ -170,6 +192,7 @@ class WebActivity : ComponentActivity() {
         resources.displayMetrics,
     ).toInt()
 
+    /** 顶栏规格与主程序 PaperTopBar 一致：44dp 行高 / 宋体 20sp 粗体 / 纸色底 + 1px 分隔线 */
     private fun buildLayout(title: String) {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -179,29 +202,52 @@ class WebActivity : ComponentActivity() {
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setBackgroundColor(card)
-            setPadding(dp(4), 0, dp(4), 0)
+            setBackgroundColor(paper)
+            setPadding(dp(4), 0, dp(8), 0)
         }
-        bar.addView(barButton("←") { if (webView.canGoBack()) webView.goBack() else finish() })
+
+        bar.addView(
+            iconButton(R.drawable.ic_arrow_back, ink, "返回") {
+                if (webView.canGoBack()) webView.goBack() else finish()
+            },
+            LinearLayout.LayoutParams(dp(44), dp(44)),
+        )
 
         tvTitle = TextView(this).apply {
             text = title.ifEmpty { "学习通" }
+            typeface = serifTypeface()
             setTextColor(ink)
-            textSize = 16f
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
+            letterSpacing = 0.045f // 对齐 PaperType.screenTitle 的 0.9sp
+            includeFontPadding = false
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
         }
         bar.addView(
             tvTitle,
-            LinearLayout.LayoutParams(0, dp(52), 1f).apply {
-                gravity = Gravity.CENTER_VERTICAL
-                marginStart = dp(8)
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginStart = dp(4)
             },
         )
 
-        bar.addView(barButton("⟳") { webView.reload() })
-        bar.addView(barButton("↗") { openExternal(webView.url ?: currentUrl) })
-        root.addView(bar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52)))
+        bar.addView(
+            iconButton(R.drawable.ic_refresh, inkSoft, "刷新") { webView.reload() },
+            LinearLayout.LayoutParams(dp(44), dp(44)),
+        )
+        bar.addView(
+            iconButton(R.drawable.ic_open_in_new, inkSoft, "用浏览器打开") {
+                openExternal(webView.url ?: currentUrl)
+            },
+            LinearLayout.LayoutParams(dp(44), dp(44)),
+        )
+
+        root.addView(bar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)))
+
+        // 与主程序顶栏下沿一致的一条细线
+        root.addView(
+            View(this).apply { setBackgroundColor(hairline) },
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 1),
+        )
 
         progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 100
@@ -216,7 +262,10 @@ class WebActivity : ComponentActivity() {
         webView = WebView(this)
         stage.addView(
             webView,
-            FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            ),
         )
 
         errorBox = LinearLayout(this).apply {
@@ -232,35 +281,41 @@ class WebActivity : ComponentActivity() {
             gravity = Gravity.CENTER
         }
         errorBox.addView(tvError)
-        errorBox.addView(
-            actionButton("重试") { hideError(); webView.reload() },
-        )
-        errorBox.addView(
-            actionButton("用浏览器打开") { openExternal(webView.url ?: currentUrl) },
-        )
+        errorBox.addView(actionButton("重试") { hideError(); webView.reload() })
+        errorBox.addView(actionButton("用浏览器打开") { openExternal(webView.url ?: currentUrl) })
         stage.addView(
             errorBox,
-            FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            ),
         )
 
         setContentView(root)
 
-        // 状态栏 / 导航栏避让：WebView 画到状态栏下面会盖住页面自己的标题栏
+        // 状态栏 / 导航栏 / 输入法都要避让：边到边之后系统不再自动 resize，
+        // 不把 ime 算进来，键盘会盖住页面里的输入框（答题、登录都会遇到）
         ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            v.setPadding(0, bars.top, 0, bars.bottom)
+            val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
+            v.setPadding(0, bars.top, 0, maxOf(bars.bottom, ime.bottom))
             insets
         }
         ViewCompat.requestApplyInsets(root)
     }
 
-    private fun barButton(label: String, onClick: () -> Unit): TextView =
-        TextView(this).apply {
-            text = label
-            setTextColor(ink)
-            textSize = 20f
-            gravity = Gravity.CENTER
-            setPadding(dp(12), dp(8), dp(12), dp(8))
+    /** 宋体标题：主程序用 Noto Serif SC，取不到时退回系统 serif */
+    private fun serifTypeface(): android.graphics.Typeface =
+        runCatching { ResourcesCompat.getFont(this, R.font.noto_serif_sc_semibold) }
+            .getOrNull() ?: android.graphics.Typeface.SERIF
+
+    private fun iconButton(resId: Int, tint: Int, desc: String, onClick: () -> Unit): ImageView =
+        ImageView(this).apply {
+            setImageResource(resId)
+            setColorFilter(tint)
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
+            contentDescription = desc
+            setPadding(dp(10), dp(10), dp(10), dp(10))
             setOnClickListener { onClick() }
         }
 
@@ -485,6 +540,9 @@ class WebActivity : ComponentActivity() {
                     runCatching { child.destroy() }
                 }
                 dialog.show()
+                dialog.window?.setBackgroundDrawable(
+                    android.graphics.drawable.ColorDrawable(this@WebActivity.paper),
+                )
                 dialog.window?.setLayout(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT,
@@ -597,10 +655,11 @@ class WebActivity : ComponentActivity() {
 }
 
 /** 从别处（Compose / 原生）打开学习通页面的统一入口 */
-fun openWebPage(context: Context, url: String, title: String) {
+fun openWebPage(context: Context, url: String, title: String, dark: Boolean = false) {
     val intent = Intent(context, WebActivity::class.java).apply {
         putExtra(WebActivity.EXTRA_URL, url)
         putExtra(WebActivity.EXTRA_TITLE, title)
+        putExtra(WebActivity.EXTRA_DARK, dark)
     }
     if (context !is android.app.Activity) {
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)

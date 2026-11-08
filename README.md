@@ -40,7 +40,7 @@
 
 ## 看一眼
 
-实机截图（v0.40.0）。同一份数据，四种看法：深浅色 × 纸感 / 手账。
+实机截图（v0.40.1）。同一份数据，四种看法：深浅色 × 纸感 / 手账。
 
 <table>
   <tr>
@@ -90,7 +90,7 @@
 ## 安装
 
 1. 到 [Releases](https://github.com/roninVW/xuexitong-tool/releases/latest) 下载最新 `xxt-board-*.apk`
-   （当前版本：[v0.40.0 直接下载](https://github.com/roninVW/xuexitong-tool/releases/download/v0.40.0/xxt-board-v0.40.0-debug.apk)）
+   （当前版本：[v0.40.1 直接下载](https://github.com/roninVW/xuexitong-tool/releases/download/v0.40.1/xxt-board-v0.40.1-debug.apk)）
 2. 允许「安装未知来源应用」后安装（自签名包，未上架任何应用商店，也不可能过审）
 3. 打开 → 在登录页正常登录学习通 → 返回看板 → 下拉同步
 
@@ -182,4 +182,4 @@ flowchart LR
 - 思路与接口现状参考了开源项目 [siye4366/xxt-Tool](https://github.com/siye4366/xxt-Tool)（MIT）等同行的实测记录——只借鉴方向，没有复制代码。
 - 视觉规范、动效 token 与踩坑记录见 [android/README.md](android/README.md)。
 
-<div align="center"><sub>作业板 v0.40.0 · 只读 · 本地 · 无服务端</sub></div>
+<div align="center"><sub>作业板 v0.40.1 · 只读 · 本地 · 无服务端</sub></div>
