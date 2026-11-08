@@ -1,0 +1,11 @@
+Noto Serif SC
+Copyright 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'.
+Copyright 2014-2021 Google LLC.
+
+This Font Software is licensed under the SIL Open Font License, Version 1.1.
+The full license text is available at:
+https://openfontlicense.org/open-font-license-official-text/
+
+The font is bundled as res/font/noto_serif_sc_semibold.otf and is used for
+titles and labels in this app. It is redistributed unmodified except for
+format packaging (subset OTF from the noto-cjk release).

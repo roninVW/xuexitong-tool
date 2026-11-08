@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- 登录态与缓存一律不进云备份 -->
+    <exclude domain="sharedpref" path="." />
+    <exclude domain="file" path="datastore" />
+    <exclude domain="database" path="." />
+</full-backup-content>

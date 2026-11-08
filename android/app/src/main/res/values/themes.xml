@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Compose 只借用这个主题的窗口属性；配色全部在 PaperTheme.kt 里 -->
+    <style name="Theme.XxtBoard" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/startup_paper</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+    </style>
+</resources>
