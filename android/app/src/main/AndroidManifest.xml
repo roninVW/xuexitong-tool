@@ -32,7 +32,13 @@
             </intent-filter>
         </activity>
 
-        <!-- 学习通网页：独立原生 Activity，WebView 不经过 Compose 的触摸分发 -->
+        <!-- 学习通网页：独立原生 Activity，WebView 不经过 Compose 的触摸/测量 -->
+        <activity
+            android:name=".ui.web.WebActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.XxtBoard" />
 
     </application>
 </manifest>

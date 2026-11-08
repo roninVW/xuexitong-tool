@@ -101,7 +101,7 @@ import com.xxt.board.ui.AppTab
 import com.xxt.board.ui.board.BoardScreen
 import com.xxt.board.ui.board.BoardViewModel
 import com.xxt.board.ui.login.LoginScreen
-import com.xxt.board.ui.web.WebScreen
+import com.xxt.board.ui.web.openWebPage
 import com.xxt.board.ui.schedule.ScheduleScreen
 import com.xxt.board.ui.schedule.ScheduleViewModel
 import com.xxt.board.ui.settings.SettingsScreen
@@ -257,9 +257,8 @@ private fun AppNav(graph: AppGraph, settings: AppSettings) {
                             blurRadius = settings.blurRadius,
                             flameEnabled = settings.flameEffect,
                             showQuote = settings.showQuote,
-                            onOpenWeb = { task ->
-                                nav.navigate(Routes.web(task.url, task.title)) { launchSingleTop = true }
-                            },
+                            // 应用内网页 = 独立原生 Activity（WebView 不进 Compose，避免测量/触摸被干扰）
+                            onOpenWeb = { task -> openWebPage(context, task.url, task.title) },
                             // 卡片上的「学习通」= 跳学习通 App（失败会回落到应用内页面）
                             onJump = { task ->
                                 scope.launch {
@@ -268,7 +267,7 @@ private fun AppNav(graph: AppGraph, settings: AppSettings) {
                                         graph.source.resolveOpenUrl(task.key, task.url)
                                     }.getOrDefault(task.url)
                                     openInChaoxing(context, target, task.title) { url ->
-                                        nav.navigate(Routes.web(url, task.title)) { launchSingleTop = true }
+                                        openWebPage(context, url, task.title)
                                     }
                                 }
                             },
@@ -337,22 +336,6 @@ private fun AppNav(graph: AppGraph, settings: AppSettings) {
                 }
             }
 
-            composable(
-                route = Routes.WEB,
-                enterTransition = { M3Transitions.webEnter() },
-                exitTransition = { M3Transitions.webExit() },
-                popEnterTransition = { M3Transitions.webPopEnter() },
-                popExitTransition = { M3Transitions.webPopExit() },
-            ) { entry ->
-                WebScreen(
-                    url = Routes.decodeArg(entry.arguments?.getString("u")),
-                    initialTitle = Routes.decodeArg(entry.arguments?.getString("t")),
-                    // 卡片点击停在「答题前一个界面」：直接用列表给的地址，不替换成 doHomeWorkNew。
-                    // 从那里点「开始答题」由页面自己走，用户多一步但不会误入答题页。
-                    onBack = { nav.popBackStack() },
-                )
-            }
-
         }
     }
 }
@@ -360,29 +343,6 @@ private fun AppNav(graph: AppGraph, settings: AppSettings) {
 private object Routes {
     const val MAIN = "main"
     const val LOGIN = "login"
-    const val WEB = "web?u={u}&t={t}"
-
-    /**
-     * URL 里带 `&`、`?`、中文，直接塞进 route 会被 Navigation 二次解码搞坏，
-     * 严重时抛 IllegalArgumentException。统一 Base64(URL_SAFE) 编一下，彻底绕开。
-     */
-    fun web(url: String, title: String): String =
-        "web?u=${b64(url)}&t=${b64(title)}"
-
-    fun decodeArg(value: String?): String = runCatching {
-        String(
-            android.util.Base64.decode(
-                value.orEmpty(),
-                android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP or android.util.Base64.NO_PADDING,
-            ),
-            Charsets.UTF_8,
-        )
-    }.getOrDefault("")
-
-    private fun b64(value: String): String = android.util.Base64.encodeToString(
-        value.toByteArray(Charsets.UTF_8),
-        android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP or android.util.Base64.NO_PADDING,
-    )
 }
 
 private const val CHAOXING_PACKAGE = "com.chaoxing.mobile"
