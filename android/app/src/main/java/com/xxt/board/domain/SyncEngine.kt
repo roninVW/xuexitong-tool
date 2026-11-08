@@ -109,21 +109,26 @@ class SyncEngine(
             }
         }
 
-        // 补详情：① 未交 / 已过期但缺截止时间；② 已批阅但列表页没给分数（考试分数多半只在详情页）。
-        // 同一条只补一次（6 小时内不重复抓），每次同步最多 24 条。
-        var budget = 24
+        // 补详情：① 未交 / 已过期但缺截止时间；② 已批阅但列表页没给分数。
+        // 两类分开计预算：以前共用一个 24 条池子，作业多的学期光补截止时间就用完了，
+        // 分数永远排不上队（考试分数尤其明显）。单条 6 小时内不重复抓（分数 30 分钟）。
+        var dueBudget = 24
+        var scoreBudget = 24
         for (i in merged.indices) {
-            if (budget <= 0) break
+            if (dueBudget <= 0 && scoreBudget <= 0) break
             val e = merged[i]
             if (e.url.isBlank()) continue
             val needDue = (e.status == TaskStatus.TODO.name || e.status == TaskStatus.EXPIRED.name) &&
                 e.dueAt == null
             val needScore = e.status == TaskStatus.GRADED.name && e.score.isNullOrBlank()
             if (!needDue && !needScore) continue
+            if (needDue && dueBudget <= 0 && !needScore) continue
+            if (needScore && scoreBudget <= 0 && !needDue) continue
             val lastTry = e.detailFetchedAt ?: 0L
             val ttl = if (needScore) SCORE_RETRY_MS else DETAIL_RETRY_MS
             if (lastTry != 0L && now - lastTry < ttl) continue
-            budget--
+            if (needDue) dueBudget--
+            if (needScore) scoreBudget--
             onStep("补详情 ${e.title.take(10)}")
             val enriched = runCatching { source.detail(e.toDomain()) }.getOrNull() ?: continue
             merged[i] = e.copy(

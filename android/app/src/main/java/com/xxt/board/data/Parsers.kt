@@ -35,8 +35,9 @@ object Parsers {
                 dueAt = grabTime(itemText, DUE_KEYS),
                 submittedAt = null,
                 gradedAt = null,
-                // 有些作业在列表页就带「成绩：95」，已批阅才认（避免标题里的数字被当成分数）
-                score = if (status == TaskStatus.GRADED) scoreOf(itemText) else null,
+                // 作业也会带分数：列表页可能写在属性里（score/data-score）、行内小标签（<b>95分</b>）
+                // 或正文（「成绩：95」）。不再限定 status == GRADED —— 有的学校已出分但状态还是「待批阅」。
+                score = scoreFromElement(el, itemText),
                 url = normalizeUrl(rawUrl),
             )
         }
@@ -56,7 +57,8 @@ object Parsers {
                 ?: cells.drop(1).firstOrNull { SCORE_CELL.matches(it.trim()) })
                 ?.trim()
                 ?.removeSuffix("分")
-            val score = scoreCell ?: scoreOf(tr.text())
+                ?.trim()
+            val score = scoreCell ?: scoreFromElement(tr, tr.text())
             Task(
                 key = keyOf(TaskType.EXAM, course.courseId, title, rawUrl),
                 type = TaskType.EXAM,
@@ -114,6 +116,31 @@ object Parsers {
     fun scoreOf(text: String?): String? {
         if (text.isNullOrBlank()) return null
         return SCORE_TEXT.find(text)?.groupValues?.get(1)
+    }
+
+    /**
+     * 列表行里的分数，按「属性 → 行内小标签 → 整行正文」三档找。
+     *
+     * 学习通列表页把分数放在哪里各校不同：`<dt data="…" score="95">`、
+     * `<b>95分</b>`、`<span class="score">成绩：95</span>` 都见过。
+     * 只在正文里按「成绩:」找会漏掉前两种，卡片上就只剩倒计时。
+     */
+    private val SCORE_ATTRS = listOf("score", "data-score", "data-scorenum", "grade", "data-grade")
+
+    fun scoreFromElement(el: org.jsoup.nodes.Element, text: String? = null): String? {
+        for (key in SCORE_ATTRS) {
+            val raw = el.attr(key).trim()
+            if (raw.isEmpty()) continue
+            if (SCORE_CELL.matches(raw)) return raw.removeSuffix("分").trim()
+            scoreOf(raw)?.let { return it }
+        }
+        for (child in el.select("b, em, i, span")) {
+            val t = child.text().trim()
+            if (t.isEmpty()) continue
+            if (SCORE_CELL.matches(t)) return t.removeSuffix("分").trim()
+            scoreOf(t)?.let { return it }
+        }
+        return scoreOf(text ?: el.text())
     }
 
     /** 从 HTML 里的 JSON 抠成绩，0 分不认（多数是「未批阅」的占位值） */

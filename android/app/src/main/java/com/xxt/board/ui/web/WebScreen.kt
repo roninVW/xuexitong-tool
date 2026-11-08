@@ -83,7 +83,11 @@ private enum class PageState { Loading, Ready, Error }
  * 它才会走 `androidjsbridge.postNotification(...)` 这条原生通道。
  *
  * 但只 `setDevice` 还不够：有的页面在解析阶段就把 window.jsBridge 建好了、有的根本没有这个对象，
- * 所以这里直接把整座桥补出来（含 window.open），保证「查看作业 / 开始答题 / 提交」有出口。
+ * 所以这里把桥补出来，保证「查看作业 / 开始答题 / 提交」有出口。
+ *
+ * 注意：**不接管 window.open**。参考实现（xxt-Tool 的 WebActivity）也不接管，
+ * 由 WebChromeClient.onCreateWindow 弹窗承接。之前把 window.open 直接改成调用桥、
+ * 返回 null，导致页面里靠新窗口渲染的内容（考试页的题卡、附件预览等）整块消失。
  */
 private const val BRIDGE_SHIM_JS = """
 (function(){
@@ -117,12 +121,6 @@ private const val BRIDGE_SHIM_JS = """
     if (typeof window.androidPostNotification !== 'function'){
       window.androidPostNotification = function(n, p){ return send(n, p); };
     }
-    // 新窗口一律交给原生：WebView 里 window.open 被拦，表现就是「点了没反应」
-    var rawOpen = window.open;
-    window.open = function(u){
-      if (u){ send('CLIENT_OPEN_URL', { webUrl: String(u), url: String(u) }); return null; }
-      return rawOpen ? rawOpen.apply(window, arguments) : null;
-    };
     return 'android';
   }catch(e){ return 'err:' + e; }
 })();
@@ -415,12 +413,17 @@ fun WebScreen(
 private class WebHolder {
     var web: WebView? = null
     var popup: WebView? = null
+
+    /** 承接 window.open 的弹窗；页面退出时要一起关掉，否则会留一个孤儿窗口 */
+    var popupDialog: android.app.Dialog? = null
     var fileCallback: ValueCallback<Array<Uri>>? = null
 
     /** createWebView 注入：由 Composable 决定第一次加载哪个地址（先解析答题页） */
     var load: ((String) -> Unit)? = null
 
     fun destroyPopup() {
+        runCatching { popupDialog?.dismiss() }
+        popupDialog = null
         popup?.let { p ->
             runCatching {
                 (p.parent as? android.view.ViewGroup)?.removeView(p)
@@ -459,29 +462,11 @@ private fun createWebView(
 
     val web = WebView(context)
 
-    /**
-     * 考试页（mooc2-ans / exam/test）是固定宽度的桌面式排版，WebView 默认按 980px 视口
-     * 渲染再缩放，元素就会挤在一起、看起来错位。这类页面按设备宽度渲染才对得上，
-     * 作业页反过来需要 useWideViewPort 才能铺满。所以在每次加载前按地址切换一次。
-     */
-    fun applyViewport(target: String) {
-        val exam = target.contains("mooc2-ans") ||
-            target.contains("/exam/") ||
-            target.contains("exam/test") ||
-            target.contains("reVersionTestStartNew")
-        with(web.settings) {
-            useWideViewPort = !exam
-            loadWithOverviewMode = !exam
-        }
-        Log.d(TAG, "viewport exam=$exam @ $target")
-    }
-
     fun load(target: String, referer: String? = null) {
         val cleaned = cleanUrl(target)
         if (cleaned.isBlank()) return
         currentUrl = cleaned
         Log.d(TAG, "load: $cleaned  referer=$referer")
-        applyViewport(cleaned)
         onState(PageState.Loading)
         val headers = if (referer.isNullOrBlank()) emptyMap() else mapOf("Referer" to referer)
         runCatching { web.loadUrl(cleaned, headers) }
@@ -722,8 +707,11 @@ private fun createWebView(
         }
 
         /**
-         * window.open / target=_blank：用一个临时 WebView 接住 transport，
-         * 拿到它要去的第一个地址就销毁，然后在本 WebView 里正常打开。
+         * window.open / target=_blank：和参考实现一致，**用独立 WebView 弹窗承接**。
+         *
+         * 之前的做法是拿到新窗口的目标地址后，直接在当前 WebView 里 load —— 于是考试页
+         * 「新窗口里加载的题卡/附件」把整个试卷页顶掉，看起来就是元素不见、布局错乱。
+         * 这里改成弹出一个全屏 WebView 承接这个窗口，原页面保持不动。
          */
         override fun onCreateWindow(
             view: WebView?,
@@ -731,37 +719,54 @@ private fun createWebView(
             isUserGesture: Boolean,
             resultMsg: Message?,
         ): Boolean {
-            val transport = resultMsg?.obj as? WebView.WebViewTransport ?: return false
+            if (resultMsg == null) return false
+            val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
+
             val popup = WebView(context)
-            holder.popup = popup
             popup.settings.apply {
                 javaScriptEnabled = true
                 domStorageEnabled = true
+                databaseEnabled = true
+                useWideViewPort = true
+                loadWithOverviewMode = true
+                setSupportMultipleWindows(true)
+                javaScriptCanOpenWindowsAutomatically = true
+                mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+                textZoom = 100
                 userAgentString = BROWSER_UA
             }
-            var handedOff = false
-            fun handOff(target: String?) {
-                if (handedOff || target.isNullOrBlank()) return
-                if (target == "about:blank") return
-                handedOff = true
-                Log.d(TAG, "window.open -> $target")
-                holder.destroyPopup()
-                load(target, referer = currentUrl)
-            }
+            CookieManager.getInstance().setAcceptThirdPartyCookies(popup, true)
             popup.webViewClient = object : WebViewClient() {
                 override fun shouldOverrideUrlLoading(
                     v: WebView?,
                     request: WebResourceRequest?,
                 ): Boolean {
-                    handOff(request?.url?.toString())
+                    val uri = request?.url ?: return false
+                    val s = uri.scheme?.lowercase(Locale.ROOT).orEmpty()
+                    if (s == "http" || s == "https") return false
+                    onExternal(uri.toString())
                     return true
-                }
-
-                override fun onPageStarted(v: WebView?, u: String?, favicon: Bitmap?) {
-                    handOff(u)
                 }
             }
             popup.webChromeClient = this
+
+            holder.popup = popup
+            val dialog = android.app.Dialog(
+                context,
+                android.R.style.Theme_Black_NoTitleBar_Fullscreen,
+            )
+            dialog.setContentView(popup)
+            dialog.setOnDismissListener {
+                holder.popup = null
+                runCatching { popup.destroy() }
+            }
+            dialog.show()
+            dialog.window?.setLayout(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+            )
+            holder.popupDialog = dialog
+
             transport.webView = popup
             resultMsg.sendToTarget()
             return true

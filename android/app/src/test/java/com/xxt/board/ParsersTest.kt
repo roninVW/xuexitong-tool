@@ -190,6 +190,60 @@ class ParsersTest {
         assertEquals("92", list.single().score)
     }
 
+    // ---------------------------------------------------------------- 作业分数
+
+    @Test
+    fun `作业分数写在属性里也能抓到`() {
+        val html = """
+            <dl>
+              <dt data="/work/phone/task-work?workId=1" status="4" score="95">
+                <h3>第四章 中值定理</h3><p>发布时间：2026-09-15 14:00</p><b>已完成</b>
+              </dt>
+            </dl>
+        """.trimIndent()
+
+        assertEquals("95", Parsers.workList(html, course).single().score)
+    }
+
+    @Test
+    fun `作业分数写在行内标签里也能抓到`() {
+        val html = """
+            <dl>
+              <dt data="/work/phone/task-work?workId=2" status="3">
+                <h3>第三章 导数</h3><p>发布时间：2026-10-01 08:00</p><b>88分</b>
+              </dt>
+            </dl>
+        """.trimIndent()
+
+        assertEquals("88", Parsers.workList(html, course).single().score)
+    }
+
+    @Test
+    fun `作业分数写在正文标签里也能抓到`() {
+        val html = """
+            <dl>
+              <dt data="/work/phone/task-work?workId=3" status="4">
+                <h3>第二章 极限</h3><p>发布时间：2026-09-01 08:00</p><span>成绩：91</span>
+              </dt>
+            </dl>
+        """.trimIndent()
+
+        assertEquals("91", Parsers.workList(html, course).single().score)
+    }
+
+    @Test
+    fun `没有分数的作业不乱猜`() {
+        val html = """
+            <dl>
+              <dt data="/work/phone/task-work?workId=4" status="1">
+                <h3>第 3 章作业</h3><p>发布时间：2026-11-01 08:00</p><b>未交</b>
+              </dt>
+            </dl>
+        """.trimIndent()
+
+        assertNull(Parsers.workList(html, course).single().score)
+    }
+
     // ---------------------------------------------------------------- 主键
 
     @Test
