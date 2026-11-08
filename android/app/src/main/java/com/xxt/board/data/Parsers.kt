@@ -51,11 +51,12 @@ object Parsers {
             val code = tr.attr("status").toIntOrNull()
             val status = statusOf(code, statusText)
             // 分数列的位置各校不一样（有的在「状态」前、有的在后）。
-            // 先试第 2 列，再在其余列里找纯数字单元格，避免整列错位就丢分。
-            val score = (cells.getOrNull(1)?.takeIf { SCORE_CELL.matches(it.trim()) }
+            // 先试第 2 列，再在其余列里找纯数字单元格；都没有时按「成绩：85」这类标签兜底。
+            val scoreCell = (cells.getOrNull(1)?.takeIf { SCORE_CELL.matches(it.trim()) }
                 ?: cells.drop(1).firstOrNull { SCORE_CELL.matches(it.trim()) })
                 ?.trim()
                 ?.removeSuffix("分")
+            val score = scoreCell ?: scoreOf(tr.text())
             Task(
                 key = keyOf(TaskType.EXAM, course.courseId, title),
                 type = TaskType.EXAM,
@@ -90,13 +91,21 @@ object Parsers {
             startAt = grabTime(haystack, START_KEYS) ?: grabJsonTime(html, "start"),
             dueAt = grabTime(haystack, DUE_KEYS) ?: grabJsonTime(html, "end"),
             submitAt = grabTime(haystack, SUBMIT_KEYS) ?: grabJsonTime(html, "submit"),
-            score = scoreOf(text),
+            // 考试的成绩大多不在正文标签里，而在页面的 JSON（"score":85 / "grade":"85.5"）
+            score = scoreOf(text) ?: scoreFromJson(html),
         )
     }
 
-    /** 详情 / 列表里的成绩：兼容「本次成绩：85」「得分 85.5 分」「卷面成绩:90」 */
+    /** 详情 / 列表里的成绩：兼容「本次成绩：85」「得分 85.5 分」「卷面成绩:90」「总评 88」 */
     private val SCORE_TEXT = Regex(
-        """(?:本次成绩|总成绩|卷面成绩|考试成绩|课程成绩|成绩|得分|分数)\s*[:：]?\s*(\d{1,3}(?:\.\d{1,2})?)""",
+        """(?:本次成绩|总成绩|考试成绩|卷面成绩|最终成绩|总评成绩|总评|课程成绩|成绩|得分|分数)""" +
+            """\s*[:：]?\s*(\d{1,3}(?:\.\d{1,2})?)""",
+    )
+
+    /** 页面里以 JSON 字段给出成绩；考试详情页常常只有这个 */
+    private val SCORE_JSON = Regex(
+        """"(?:score|grade|myScore|userScore|totalScore|examScore|finalScore)"\s*:\s*"?(\d{1,3}(?:\.\d{1,2})?)""",
+        RegexOption.IGNORE_CASE,
     )
 
     /** 表格里「纯分数」的单元格：85 / 85.5 / 85分 */
@@ -105,6 +114,13 @@ object Parsers {
     fun scoreOf(text: String?): String? {
         if (text.isNullOrBlank()) return null
         return SCORE_TEXT.find(text)?.groupValues?.get(1)
+    }
+
+    /** 从 HTML 里的 JSON 抠成绩，0 分不认（多数是「未批阅」的占位值） */
+    fun scoreFromJson(html: String?): String? {
+        if (html.isNullOrBlank()) return null
+        val value = SCORE_JSON.find(html)?.groupValues?.get(1) ?: return null
+        return value.takeIf { it.toDoubleOrNull()?.let { n -> n > 0 } == true }
     }
 
     private val START_KEYS = listOf("开始时间", "考试时间", "开始日期", "startTime", "start_time")

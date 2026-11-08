@@ -151,4 +151,41 @@ class ParsersTest {
         )
         assertEquals(answer, Parsers.toApiHost(Parsers.toWebHost(answer)))
     }
+
+    // ---------------------------------------------------------------- 考试分数
+
+    @Test
+    fun `考试分数认正文标签的几种写法`() {
+        assertEquals("85", Parsers.scoreOf("本次成绩：85"))
+        assertEquals("90.5", Parsers.scoreOf("得分 90.5 分"))
+        assertEquals("88", Parsers.scoreOf("总评 88"))
+        assertEquals("92", Parsers.scoreOf("卷面成绩:92"))
+        assertNull(Parsers.scoreOf("尚未批阅"))
+    }
+
+    @Test
+    fun `考试分数能从页面 JSON 里取到`() {
+        val html = """<script>var data = {"examId":7,"score":86.5,"status":4};</script>"""
+        assertEquals("86.5", Parsers.scoreFromJson(html))
+        assertEquals("86.5", Parsers.detail(html).score)
+    }
+
+    @Test
+    fun `未批阅的 0 分不当作成绩`() {
+        assertNull(Parsers.scoreFromJson("""{"score":0,"status":3}"""))
+    }
+
+    @Test
+    fun `考试列表分数列错位时按标签兜底`() {
+        val html = """
+            <table>
+              <tr data="/exam/phone/task-exam?examId=8" status="4" title="期末考试">
+                <td>期末考试</td><td>已批阅</td><td>成绩：92</td>
+              </tr>
+            </table>
+        """.trimIndent()
+
+        val list = Parsers.examList(html, course)
+        assertEquals("92", list.single().score)
+    }
 }

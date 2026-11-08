@@ -163,9 +163,8 @@ private const val BROWSER_UA =
  * 应用内作业 / 考试页。
  *
  * 关键点（不实现就会「进得去、点不动」）：
- * 1. **先解析答题页**：列表给的是入口页（`/work/phone/task-work`），题目与提交界面在
- *    `doHomeWorkNew` / `reVersionTestStartNew` 上。入口页的按钮走 App 的 jsBridge，在
- *    纯 WebView 里点了没反应，所以先由 [resolve] 把真地址换出来再加载。
+ * 1. **默认打开原地址**（答题前一个界面）。列表给的 `/work/phone/task-work` 是详情入口页，
+ *    从那里点「开始答题」即可；若调用方传了 [resolve]，才在加载前把地址换成答题页。
  * 2. **jsBridge**：学习通的「继续答题 / 查看详情 / 修改答案 / 提交」是 jsBridge 调用，
  *    不是普通链接。必须实现 `androidjsbridge.postNotification`，并把整座桥补出来
  *    （`window.jsBridge` / `window.open`），否则按钮静默无反应。
@@ -240,9 +239,9 @@ fun WebScreen(
             .getOrNull()
             ?.takeIf { it.isNotBlank() }
             ?: url
-        // 答题页在接口域名下生成（_CP_ = /mooc-ans），但 WebView 里网页域名更稳，
-        // 所以网页域名优先，接口域名和入口页依次兜底。
-        val list = (listOf(Parsers.toWebHost(resolved), resolved) + listOf(url, Parsers.toWebHost(url)))
+        // 默认（resolve 恒等）直接用列表给的地址，也就是「答题前一个界面」；
+        // 若调用方传了解析函数，则优先用解析出的地址，再退到原地址。
+        val list = listOf(resolved, Parsers.toWebHost(resolved), url)
             .filter { it.isNotBlank() }
             .distinct()
         candidates = list

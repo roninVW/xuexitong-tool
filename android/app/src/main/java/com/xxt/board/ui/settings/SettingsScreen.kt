@@ -340,7 +340,7 @@ fun SettingsScreen(
                     M3Card {
                         Column(Modifier.padding(16.dp)) {
                             Text(
-                                "作业板 v0.39.1",
+                                "作业板 v0.39.2",
                                 style = MaterialTheme.typography.titleMedium,
                                 color = cs.onSurface,
                             )

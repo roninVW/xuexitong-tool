@@ -60,6 +60,9 @@ object TaskBuckets {
 /** 同一条任务的详情最多 6 小时抓一次，避免每次同步重复请求 */
 private const val DETAIL_RETRY_MS = 6 * 60 * 60 * 1000L
 
+/** 已批阅但没拿到分数时单独放宽：批阅常常比同步晚几十分钟，等 6 小时太亏 */
+private const val SCORE_RETRY_MS = 30 * 60 * 1000L
+
 class SyncEngine(
     private val source: ChaoxingSource,
     private val dao: BoardDao,
@@ -103,7 +106,8 @@ class SyncEngine(
             val needScore = e.status == TaskStatus.GRADED.name && e.score.isNullOrBlank()
             if (!needDue && !needScore) continue
             val lastTry = e.detailFetchedAt ?: 0L
-            if (lastTry != 0L && now - lastTry < DETAIL_RETRY_MS) continue
+            val ttl = if (needScore) SCORE_RETRY_MS else DETAIL_RETRY_MS
+            if (lastTry != 0L && now - lastTry < ttl) continue
             budget--
             onStep("补详情 ${e.title.take(10)}")
             val enriched = runCatching { source.detail(e.toDomain()) }.getOrNull() ?: continue

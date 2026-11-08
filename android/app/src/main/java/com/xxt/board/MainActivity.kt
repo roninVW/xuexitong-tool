@@ -347,8 +347,8 @@ private fun AppNav(graph: AppGraph, settings: AppSettings) {
                 WebScreen(
                     url = Routes.decodeArg(entry.arguments?.getString("u")),
                     initialTitle = Routes.decodeArg(entry.arguments?.getString("t")),
-                    // 入口页 → 答题页：在 WebView 里加载前先换地址
-                    resolve = { raw -> graph.source.resolveOpenUrl(raw, raw) },
+                    // 卡片点击停在「答题前一个界面」：直接用列表给的地址，不替换成 doHomeWorkNew。
+                    // 从那里点「开始答题」由页面自己走，用户多一步但不会误入答题页。
                     onBack = { nav.popBackStack() },
                 )
             }
