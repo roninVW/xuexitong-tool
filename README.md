@@ -97,6 +97,8 @@
 
 **环境**：Android 8.0（API 26）及以上，目标 Android 16（API 36）。国内 ROM 的「性能模式」可能关掉 `RenderEffect`，此时只剩实色玻璃，功能不受影响。
 
+> 想回看早期版本？[构建归档](https://github.com/roninVW/xuexitong-tool/releases/tag/builds) 里存着 v0.1.0 – v0.37.0 每一次迭代的包（debug 备份，不建议日常安装）。
+
 ## 自己编译
 
 需要 JDK 21 与 Android SDK（platform 36）。工程已带 Gradle Wrapper。
