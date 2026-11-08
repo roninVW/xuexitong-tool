@@ -40,7 +40,7 @@
 
 ## 看一眼
 
-实机截图（v0.38.0）。同一份数据，四种看法：深浅色 × 纸感 / 手账。
+实机截图（v0.39.0）。同一份数据，四种看法：深浅色 × 纸感 / 手账。
 
 <table>
   <tr>
@@ -63,7 +63,8 @@
 - 按科目分组（计算机、数学、英语、思政、物理、化学、医学、经管、艺术、体育、工程、军事、通识、未分类）
 - 作业与考试分开配色，考试可单独指定颜色
 - 顶栏「作业 ⌄」切换作业/考试，「未完成 ⌄」打开状态 + 科目筛选（带数量）
-- 点击卡片进详情：分数、截止时间、描述；可在应用内打开原页面，或跳到学习通 App
+- 点击卡片**直接进答题页**：自动把列表给的入口页换成 `doHomeWorkNew`，能一路看到作业要求、做到提交（不再停在入口页）
+- 详情里带分数、截止时间；右上角可一键跳学习通 App（优先尝试 App 声明的深链，失败回落应用内页面）
 - 下拉刷新即同步一次
 
 **课表**
@@ -88,7 +89,7 @@
 ## 安装
 
 1. 到 [Releases](https://github.com/roninVW/xuexitong-tool/releases/latest) 下载最新 `xxt-board-*.apk`
-   （当前版本：[v0.38.0 直接下载](https://github.com/roninVW/xuexitong-tool/releases/download/v0.38.0/xxt-board-v0.38.0-debug.apk)）
+   （当前版本：[v0.39.0 直接下载](https://github.com/roninVW/xuexitong-tool/releases/download/v0.39.0/xxt-board-v0.39.0-debug.apk)）
 2. 允许「安装未知来源应用」后安装（自签名包，未上架任何应用商店，也不可能过审）
 3. 打开 → 在登录页正常登录学习通 → 返回看板 → 下拉同步
 
@@ -180,4 +181,4 @@ flowchart LR
 - 思路与接口现状参考了开源项目 [siye4366/xxt-Tool](https://github.com/siye4366/xxt-Tool)（MIT）等同行的实测记录——只借鉴方向，没有复制代码。
 - 视觉规范、动效 token 与踩坑记录见 [android/README.md](android/README.md)。
 
-<div align="center"><sub>作业板 v0.38.0 · 只读 · 本地 · 无服务端</sub></div>
+<div align="center"><sub>作业板 v0.39.0 · 只读 · 本地 · 无服务端</sub></div>

@@ -87,4 +87,35 @@ class ChaoxingSource(private val http: ChaoxingHttp) {
             score = d.score ?: task.score,
         )
     }
+
+    // ---------------------------------------------------------------- 打开作业
+
+    /** key → 答题页地址。点一次解析一次太慢，而同一份作业的地址在一次会话里不会变 */
+    private val openUrlCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    /**
+     * 把「列表里的入口页地址」换成「真正的答题页/考试页地址」。
+     *
+     * 入口页 `/work/phone/task-work?...` 是给官方 App 的壳用的，页面上的按钮走 jsBridge，
+     * 在纯 WebView 里经常点了没反应，于是永远进不到题目与提交界面。这里用登录 Cookie
+     * 取一次入口页 HTML，把里面写着的 doHomeWorkNew / reVersionTestStartNew 地址抠出来。
+     *
+     * 解析失败（页面改版、Cookie 过期、网络不通）时原样返回入口页，不影响打开。
+     */
+    suspend fun resolveOpenUrl(key: String, taskUrl: String): String {
+        if (taskUrl.isBlank()) return taskUrl
+        if (Parsers.isAnswerUrl(taskUrl)) return taskUrl
+        openUrlCache[key]?.let { return it }
+        val html = runCatching {
+            http.get(taskUrl, referer = ChaoxingHttp.REFERER)
+        }.getOrNull().orEmpty()
+        val answer = Parsers.extractAnswerUrl(html) ?: return taskUrl
+        openUrlCache[key] = answer
+        return answer
+    }
+
+    /** 提交完作业回来，把缓存清掉，下次重新解析（状态可能已经从「未交」变成「待批阅」） */
+    fun forgetOpenUrl(key: String) {
+        openUrlCache.remove(key)
+    }
 }

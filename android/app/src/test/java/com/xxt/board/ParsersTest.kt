@@ -6,6 +6,7 @@ import com.xxt.board.data.Subject
 import com.xxt.board.data.TaskStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -95,5 +96,59 @@ class ParsersTest {
 
         val list = Parsers.workList(html, course)
         assertEquals(TaskStatus.SUBMITTED, list.single().status)
+    }
+
+    // ---------------------------------------------------------------- 答题页地址
+
+    @Test
+    fun `从 _CP_ 里取答题页地址`() {
+        val html = """
+            <script>
+              var url = location.origin + _CP_ + '/work/doHomeWorkNew?courseId=1&classId=2';
+            </script>
+        """.trimIndent()
+
+        assertEquals(
+            "https://mooc1-api.chaoxing.com/mooc-ans/work/doHomeWorkNew?courseId=1&classId=2",
+            Parsers.extractAnswerUrl(html),
+        )
+    }
+
+    @Test
+    fun `从 href 取答题页并还原 HTML 实体`() {
+        val html = """<a href="/mooc-ans/work/doHomeWorkNew?courseId=1&amp;classId=2">开始答题</a>"""
+
+        assertEquals(
+            "https://mooc1-api.chaoxing.com/mooc-ans/work/doHomeWorkNew?courseId=1&classId=2",
+            Parsers.extractAnswerUrl(html),
+        )
+    }
+
+    @Test
+    fun `考试页同样能取到地址`() {
+        val html = """<a href="/mooc-ans/exam/test/reVersionTestStartNew?courseId=7&examId=8">开始考试</a>"""
+
+        assertEquals(
+            "https://mooc1-api.chaoxing.com/mooc-ans/exam/test/reVersionTestStartNew?courseId=7&examId=8",
+            Parsers.extractAnswerUrl(html),
+        )
+    }
+
+    @Test
+    fun `只有入口页时返回 null`() {
+        assertNull(Parsers.extractAnswerUrl("<html><body>作业详情：第七章</body></html>"))
+    }
+
+    @Test
+    fun `答题页地址判定与域名互换`() {
+        val answer = "https://mooc1-api.chaoxing.com/mooc-ans/work/doHomeWorkNew?workId=1"
+        assertTrue(Parsers.isAnswerUrl(answer))
+        assertTrue(!Parsers.isAnswerUrl("https://mooc1-api.chaoxing.com/work/phone/task-work?workId=1"))
+
+        assertEquals(
+            "https://mooc1.chaoxing.com/mooc-ans/work/doHomeWorkNew?workId=1",
+            Parsers.toWebHost(answer),
+        )
+        assertEquals(answer, Parsers.toApiHost(Parsers.toWebHost(answer)))
     }
 }

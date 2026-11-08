@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.util.Log
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebSettings
@@ -115,6 +116,7 @@ import com.xxt.board.ui.wallpaper.WallpaperBackdrop
 import com.xxt.board.ui.wallpaper.WallpaperSpec
 import com.xxt.board.work.SyncScheduler
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -260,8 +262,14 @@ private fun AppNav(graph: AppGraph, settings: AppSettings) {
                             },
                             // 卡片上的「学习通」= 跳学习通 App（失败会回落到应用内页面）
                             onJump = { task ->
-                                openInChaoxing(context, task.url) { url ->
-                                    nav.navigate(Routes.web(url, task.title)) { launchSingleTop = true }
+                                scope.launch {
+                                    // 先把入口页解析成真正的答题页，交给学习通 / 浏览器才落在作业上
+                                    val target = runCatching {
+                                        graph.source.resolveOpenUrl(task.key, task.url)
+                                    }.getOrDefault(task.url)
+                                    openInChaoxing(context, target, task.title) { url ->
+                                        nav.navigate(Routes.web(url, task.title)) { launchSingleTop = true }
+                                    }
                                 }
                             },
                             onNeedLogin = {
@@ -339,6 +347,8 @@ private fun AppNav(graph: AppGraph, settings: AppSettings) {
                 WebScreen(
                     url = Routes.decodeArg(entry.arguments?.getString("u")),
                     initialTitle = Routes.decodeArg(entry.arguments?.getString("t")),
+                    // 入口页 → 答题页：在 WebView 里加载前先换地址
+                    resolve = { raw -> graph.source.resolveOpenUrl(raw, raw) },
                     onBack = { nav.popBackStack() },
                 )
             }
@@ -390,74 +400,120 @@ private fun copyLink(context: Context, url: String) {
 }
 
 /**
- * 一跳学习通 App。
+ * 一跳学习通 App，尽量直接落到「这份作业」上。
  *
- * 原来的实现只有一条路：`ACTION_VIEW + setPackage`，而学习通并没注册大多数
- * 作业页的 http 过滤器，`resolveActivity` 直接返回 null，于是永远落到应用内
- * 浏览器——看起来就是「跳转没生效」。
+ * 老实现只有一个假设：`ACTION_VIEW + setPackage` 就能把网址喂给学习通。实际不是——
+ * 学习通没给作业页注册 http 过滤器，`queryIntentActivities` 直接空，于是每次都落到
+ * 应用内浏览器，看起来就是「跳转没生效」。
  *
- * 现在逐级降级，每一级都给出可见反馈：
- *  1. 交给学习通处理网页链接（部分版本注册了 mooc1 域名，能直达作业页）
- *  2. 换 http 再试一次
- *  3. 直接拉起学习通首页，并把链接复制到剪贴板
- *  4. 都失败才回落到应用内 WebView
+ * 现在的顺序（每一级都有可见反馈，logcat 里也留痕）：
+ *  1. App 若确实注册了这个域名 → 直接把答题页网址交给它；
+ *  2. App 自己声明的私有 scheme（cxstudy / chaoxing）带上目标地址；
+ *  3. `intent://` 形式（带 package + scheme=https）；
+ *  4. 都不行 → 拉起首页，并把答题页地址放进剪贴板（在学习通里粘贴即可）。
  */
-fun openInChaoxing(context: Context, url: String, onFallback: (String) -> Unit) {
+fun openInChaoxing(context: Context, url: String, title: String, onFallback: (String) -> Unit) {
     val pm = context.packageManager
-    val installed = runCatching { pm.getPackageInfo(CHAOXING_PACKAGE, 0) }.isSuccess
-    if (!installed) {
+    if (runCatching { pm.getPackageInfo(CHAOXING_PACKAGE, 0) }.isFailure) {
         toast(context, "没装学习通，先用应用内页面打开")
         onFallback(url)
         return
     }
 
-    // 接口域名在 App 里是打不开的，换成网页域名；个别任务没有链接，退回学习通首页
+    // 接口域名在 App 里打不开，换成网页域名；入口页若没解析出答题页，至少也是个能看的页面
     val web = webUrlOf(url)
 
-    // 学习通对外只有自己的 scheme（cxstudy://），并没有"按作业 ID 直达"的公开深链。
-    // 这里把两种常见写法都试一遍：能带上目标和 url 最好，不行至少把 App 拉起来。
-    val deepLinks = listOf(
-        "cxstudy://cxstudy/web?url=${Uri.encode(web)}",
-        "cxstudy://web?url=${Uri.encode(web)}",
-    )
-    for (deep in deepLinks) {
-        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(deep)).apply {
-            setPackage(CHAOXING_PACKAGE)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        val handled = runCatching { pm.queryIntentActivities(intent, 0).isNotEmpty() }
-            .getOrDefault(false)
-        if (handled && runCatching { context.startActivity(intent) }.isSuccess) {
-            copyLink(context, web)
-            toast(context, "已调起学习通；没直接进作业页的话，链接已复制可直接粘贴")
+    // 1) 域名被 App 接管（部分版本会注册 i.chaoxing.com 之类）
+    for (target in listOf(web, web.replaceFirst("https://", "http://"))) {
+        if (!appHandles(pm, target)) continue
+        if (startView(context, target)) {
+            Log.d("XXTJump", "交给学习通处理: $target")
+            toast(context, "已在学习通里打开这份作业")
             return
         }
     }
 
-    val targets = listOf(web, web.replaceFirst("https://", "http://")).distinct()
-
-    for (target in targets) {
-        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(target)).apply {
-            setPackage(CHAOXING_PACKAGE)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    // 2) App 自己声明的私有 scheme
+    val schemes = appSchemes(pm)
+    Log.d("XXTJump", "学习通声明的 scheme: $schemes | 目标: $web")
+    val encoded = Uri.encode(web)
+    val deepLinks = buildList {
+        if ("cxstudy" in schemes) {
+            add("cxstudy://web?url=$encoded")
+            add("cxstudy://openApp?url=$encoded")
+            add("cxstudy://browser?url=$encoded")
         }
-        val handled = runCatching { pm.queryIntentActivities(intent, 0).isNotEmpty() }
-            .getOrDefault(false)
-        if (handled && runCatching { context.startActivity(intent) }.isSuccess) return
+        if ("chaoxing" in schemes) {
+            add("chaoxing://web?url=$encoded")
+            add("chaoxing://openApp?url=$encoded")
+        }
+        // 3) 最后一路：intent:// 形式，交给系统解析
+        add("intent://${web.substringAfter("://")}#Intent;scheme=https;package=$CHAOXING_PACKAGE;end")
+    }
+    for (deep in deepLinks) {
+        if (!startRaw(context, deep)) continue
+        Log.d("XXTJump", "深链已发出: ${deep.take(120)}")
+        copyLink(context, web)
+        toast(context, "已调起学习通；若停在首页，答题页链接已复制")
+        return
     }
 
+    // 4) 只能拉起首页
     val launch = pm.getLaunchIntentForPackage(CHAOXING_PACKAGE)
     if (launch != null && runCatching {
             context.startActivity(launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         }.isSuccess
     ) {
         copyLink(context, web)
-        toast(context, "已打开学习通；作业链接已复制，可在 App 内粘贴打开")
+        toast(context, "学习通已打开；答题页链接已复制，可在应用内粘贴")
         return
     }
 
     toast(context, "打开学习通失败，已用应用内页面打开")
     onFallback(web)
+}
+
+/** 应用是否给这个网址声明了打开方式（学习通大多作业页是 false，这正是老实现失效的原因） */
+private fun appHandles(pm: android.content.pm.PackageManager, url: String): Boolean = runCatching {
+    pm.queryIntentActivities(
+        Intent(Intent.ACTION_VIEW, Uri.parse(url)).setPackage(CHAOXING_PACKAGE),
+        0,
+    ).isNotEmpty()
+}.getOrDefault(false)
+
+/** 应用声明的私有 scheme（cxstudy / chaoxing …），用来拼深链 */
+private fun appSchemes(pm: android.content.pm.PackageManager): Set<String> {
+    val probe = Intent(Intent.ACTION_VIEW).setPackage(CHAOXING_PACKAGE)
+    val list = runCatching {
+        pm.queryIntentActivities(probe, android.content.pm.PackageManager.MATCH_ALL)
+    }.getOrNull().orEmpty()
+    val out = LinkedHashSet<String>()
+    for (ri in list) {
+        val filter = ri.filter ?: continue
+        for (i in 0 until filter.countDataSchemes()) {
+            filter.getDataScheme(i)?.lowercase(Locale.ROOT)?.takeIf { it.isNotBlank() }?.let(out::add)
+        }
+    }
+    return out
+}
+
+private fun startView(context: Context, target: String): Boolean = runCatching {
+    context.startActivity(
+        Intent(Intent.ACTION_VIEW, Uri.parse(target)).apply {
+            setPackage(CHAOXING_PACKAGE)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        },
+    )
+}.isSuccess
+
+private fun startRaw(context: Context, raw: String): Boolean {
+    val intent = if (raw.startsWith("intent:")) {
+        runCatching { Intent.parseUri(raw, Intent.URI_INTENT_SCHEME) }.getOrNull() ?: return false
+    } else {
+        Intent(Intent.ACTION_VIEW, Uri.parse(raw)).apply { setPackage(CHAOXING_PACKAGE) }
+    }
+    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    return runCatching { context.startActivity(intent) }.isSuccess
 }
 
 /** 接口域名（mooc1-api）在 WebView 里打不开，统一换回网页域名 */

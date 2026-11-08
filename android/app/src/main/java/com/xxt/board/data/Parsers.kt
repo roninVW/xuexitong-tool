@@ -214,4 +214,85 @@ object Parsers {
             else -> ChaoxingHttp.MOOC + "/" + path
         }
     }
+
+    // ---------------------------------------------------------------- 答题页地址
+
+    /*
+     * 列表里的 url 只是「入口页」（/work/phone/task-work?...），它是给官方 App 的壳用的：
+     * 页面本身只有课程名、时间、状态，点「查看作业要求 / 开始答题」走的是 App 的 jsBridge。
+     * 在纯 WebView 里这个按钮经常点了没反应，于是停在入口页，永远进不到题目和提交界面。
+     *
+     * 真正的答题页写在入口页的 HTML 里，常见三种写法：
+     *   var url = location.origin + _CP_ + '/work/doHomeWorkNew?...'
+     *   <a href="/mooc-ans/work/doHomeWorkNew?...">开始答题</a>
+     *   window.location.href = '/mooc-ans/exam/test/reVersionTestStartNew?...'
+     * 这里把地址抠出来，直接打开答题页，绕开那个失效的按钮。
+     */
+
+    private const val ANSWER_PATH = "doHomeWorkNew|selectWorkQuestion|reVersionTestStartNew|work/dowork|exam/test"
+
+    private val CP_URL = Regex(
+        """(?:var|let|const)?\s*url\s*=\s*location\.origin\s*\+\s*_CP_\s*\+\s*['"]([^'"]+)['"]""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val CP_ONLY = Regex("""_CP_\s*\+\s*['"]([^'"]+)['"]""", RegexOption.IGNORE_CASE)
+    private val HREF_ANSWER = Regex(
+        """href\s*=\s*["']([^"']*(?:$ANSWER_PATH)[^"']*)["']""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val MOOC_ANS_HREF = Regex("""href\s*=\s*["']([^"']*mooc-ans[^"']*)["']""", RegexOption.IGNORE_CASE)
+    private val GENERIC_ANSWER = Regex(
+        """(?:url|href|src)\s*[=:]\s*['"]([^'"]*(?:$ANSWER_PATH)[^"']*)['"]""",
+        RegexOption.IGNORE_CASE,
+    )
+
+    /**
+     * 从入口页 HTML 里取出答题页绝对地址（保持接口域名，WebView 打开时会换成网页域名）。
+     * 找不到返回 null，调用方仍按入口页打开。
+     */
+    fun extractAnswerUrl(html: String): String? {
+        val text = html.replace("&amp;", "&").replace("&#38;", "&")
+
+        CP_URL.find(text)?.groupValues?.get(1)?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            return absoluteAnswer(it)
+        }
+        CP_ONLY.find(text)?.groupValues?.get(1)?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            return absoluteAnswer(it)
+        }
+        for (regex in listOf(HREF_ANSWER, MOOC_ANS_HREF, GENERIC_ANSWER)) {
+            val raw = regex.find(text)?.groupValues?.get(1)?.trim().orEmpty()
+            if (raw.isNotEmpty() && !raw.startsWith("javascript:", ignoreCase = true)) {
+                return absoluteAnswer(raw)
+            }
+        }
+        return null
+    }
+
+    /** 已经是答题页地址（不需要再解析一次） */
+    fun isAnswerUrl(url: String): Boolean =
+        url.contains("/mooc-ans/") || Regex(ANSWER_PATH).containsMatchIn(url)
+
+    /**
+     * `_CP_` 在学习通里就是 `/mooc-ans`，只会出现在接口域名下；
+     * 直接写成 `/mooc-ans/...` 的也按接口域名补全。
+     */
+    private fun absoluteAnswer(raw: String): String {
+        val p = raw.trim()
+        return when {
+            p.startsWith("http://") || p.startsWith("https://") -> p
+            p.startsWith("//") -> "https:$p"
+            p.startsWith("/mooc-ans/") -> ChaoxingHttp.MOOC + p
+            p.startsWith("/work/") || p.startsWith("/exam/") -> ChaoxingHttp.MOOC + "/mooc-ans" + p
+            p.startsWith("/") -> ChaoxingHttp.MOOC + p
+            else -> ChaoxingHttp.MOOC + "/mooc-ans/" + p
+        }
+    }
+
+    /** 接口域名 → 网页域名（WebView / 学习通 App 里只认网页域名） */
+    fun toWebHost(url: String): String =
+        url.replace("mooc1-api.chaoxing.com", "mooc1.chaoxing.com")
+
+    /** 网页域名 → 接口域名（解析 HTML 时用接口域名更稳） */
+    fun toApiHost(url: String): String =
+        url.replace("://mooc1.chaoxing.com", "://mooc1-api.chaoxing.com")
 }
