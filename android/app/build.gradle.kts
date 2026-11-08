@@ -14,8 +14,8 @@ android {
         applicationId = "com.xxt.board"
         minSdk = 26
         targetSdk = 36
-        versionCode = 40
-        versionName = "0.39.0"
+        versionCode = 41
+        versionName = "0.39.1"
         vectorDrawables { useSupportLibrary = true }
     }
 

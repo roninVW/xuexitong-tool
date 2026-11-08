@@ -433,40 +433,58 @@ fun openInChaoxing(context: Context, url: String, title: String, onFallback: (St
         }
     }
 
-    // 2) App 自己声明的私有 scheme
+    // 2) App 自己的私有 scheme。
+    //
+    // 这里不再拿 scheme 探测结果做闸门：`queryIntentActivities` 在部分 ROM / Android 版本上
+    // 会因为包可见性或 filter 形态返回空，一旦为空，下面的深链就一条都不会发出去——表现正是
+    // 「点了学习通，只跳到首页」。探测结果只用于日志与排序，发不发由「有没有装」决定。
     val schemes = appSchemes(pm)
-    Log.d("XXTJump", "学习通声明的 scheme: $schemes | 目标: $web")
+    Log.d("XXTJump", "学习通声明的 scheme=${schemes.ifEmpty { "探测为空" }} | 目标=$web")
     val encoded = Uri.encode(web)
     val deepLinks = buildList {
-        if ("cxstudy" in schemes) {
-            add("cxstudy://web?url=$encoded")
-            add("cxstudy://openApp?url=$encoded")
-            add("cxstudy://browser?url=$encoded")
+        // 学习通网页里唤醒用的就是 cxstudy://；带 url/webUrl 参数是各家壳常见写法，
+        // 参数被忽略时至少把 App 拉起来，不会比现状更差。
+        add("cxstudy://openApp?url=$encoded&webUrl=$encoded")
+        add("cxstudy://web?url=$encoded&webUrl=$encoded")
+        add("cxstudy://browser?url=$encoded")
+        add("cxstudy://?url=$encoded&webUrl=$encoded")
+        if ("chaoxing" in schemes || schemes.isEmpty()) {
+            add("chaoxing://web?url=$encoded&webUrl=$encoded")
+            add("chaoxing://openApp?url=$encoded&webUrl=$encoded")
         }
-        if ("chaoxing" in schemes) {
-            add("chaoxing://web?url=$encoded")
-            add("chaoxing://openApp?url=$encoded")
-        }
-        // 3) 最后一路：intent:// 形式，交给系统解析
+        // 纯唤醒：保证 App 一定起来（排在上面几条之后）
+        add("cxstudy://")
+        // intent:// 形式，交给系统按 package + scheme 解析
         add("intent://${web.substringAfter("://")}#Intent;scheme=https;package=$CHAOXING_PACKAGE;end")
     }
     for (deep in deepLinks) {
-        if (!startRaw(context, deep)) continue
+        if (!startRaw(context, deep)) {
+            Log.d("XXTJump", "深链被拒: ${deep.take(80)}")
+            continue
+        }
         Log.d("XXTJump", "深链已发出: ${deep.take(120)}")
         copyLink(context, web)
-        toast(context, "已调起学习通；若停在首页，答题页链接已复制")
+        toast(context, if (deep == "cxstudy://") {
+            "已打开学习通；它没有开放按作业直达，答题页链接已复制"
+        } else {
+            "已调起学习通；若停在首页，答题页链接已复制，可粘贴打开"
+        })
         return
     }
 
-    // 4) 只能拉起首页
+    // 3) 启动页带上地址：多数版本会忽略，少数会当深链用，代价为零
     val launch = pm.getLaunchIntentForPackage(CHAOXING_PACKAGE)
-    if (launch != null && runCatching {
-            context.startActivity(launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-        }.isSuccess
-    ) {
-        copyLink(context, web)
-        toast(context, "学习通已打开；答题页链接已复制，可在应用内粘贴")
-        return
+    if (launch != null) {
+        launch.setData(Uri.parse(web))
+        launch.putExtra("url", web)
+        launch.putExtra("webUrl", web)
+        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (runCatching { context.startActivity(launch) }.isSuccess) {
+            Log.d("XXTJump", "启动页带参: $web")
+            copyLink(context, web)
+            toast(context, "学习通已打开；答题页链接已复制，可粘贴打开")
+            return
+        }
     }
 
     toast(context, "打开学习通失败，已用应用内页面打开")
