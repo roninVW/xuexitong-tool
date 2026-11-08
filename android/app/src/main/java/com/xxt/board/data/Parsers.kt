@@ -23,7 +23,7 @@ object Parsers {
             val itemText = el.text()
             val status = statusOf(el.attr("status").toIntOrNull(), action)
             Task(
-                key = keyOf(TaskType.WORK, course.courseId, title),
+                key = keyOf(TaskType.WORK, course.courseId, title, rawUrl),
                 type = TaskType.WORK,
                 courseId = course.courseId,
                 classId = course.classId,
@@ -58,7 +58,7 @@ object Parsers {
                 ?.removeSuffix("分")
             val score = scoreCell ?: scoreOf(tr.text())
             Task(
-                key = keyOf(TaskType.EXAM, course.courseId, title),
+                key = keyOf(TaskType.EXAM, course.courseId, title, rawUrl),
                 type = TaskType.EXAM,
                 courseId = course.courseId,
                 classId = course.classId,
@@ -218,8 +218,25 @@ object Parsers {
         else -> TaskStatus.TODO
     }
 
-    fun keyOf(type: TaskType, courseId: String, title: String): String =
-        "${type.name}|$courseId|${title.trim()}"
+    /**
+     * 任务主键。
+     *
+     * 只用「类型 + 课程 + 标题」会撞车：同一门课里「第 3 章作业」「章节测验」这类标题
+     * 每周都重复，后来的会把前面的覆盖掉，表现就是「早一点的作业莫名消失」。
+     * 所以优先用链接里的 workId / examId 这类稳定编号，取不到才退回标题。
+     */
+    fun keyOf(type: TaskType, courseId: String, title: String, url: String = ""): String {
+        val id = idOf(url)
+        return if (id != null) "${type.name}|$courseId|#$id" else "${type.name}|$courseId|${title.trim()}"
+    }
+
+    private val ID_PARAM = Regex(
+        """[?&](?:workId|examId|jobId|activeId|courseWorkId)=(\d+)""",
+        RegexOption.IGNORE_CASE,
+    )
+
+    /** 从入口页地址里取稳定编号；取不到返回 null */
+    fun idOf(url: String): String? = ID_PARAM.find(url)?.groupValues?.get(1)
 
     fun normalizeUrl(raw: String): String {
         val path = raw.trim()

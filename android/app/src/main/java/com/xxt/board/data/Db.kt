@@ -75,6 +75,10 @@ interface BoardDao {
     @Query("DELETE FROM tasks WHERE key = :key")
     suspend fun deleteTask(key: String)
 
+    /** 清掉某门课里本次同步已经不存在的任务（含主键规则变更后遗留的旧行） */
+    @Query("DELETE FROM tasks WHERE courseId IN (:courseIds) AND key NOT IN (:keep)")
+    suspend fun deleteStale(courseIds: List<String>, keep: List<String>)
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun addHistory(item: StatusHistoryEntity)
 

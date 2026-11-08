@@ -4,6 +4,7 @@ import com.xxt.board.data.Course
 import com.xxt.board.data.Parsers
 import com.xxt.board.data.Subject
 import com.xxt.board.data.TaskStatus
+import com.xxt.board.data.TaskType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -187,5 +188,41 @@ class ParsersTest {
 
         val list = Parsers.examList(html, course)
         assertEquals("92", list.single().score)
+    }
+
+    // ---------------------------------------------------------------- 主键
+
+    @Test
+    fun `同名作业按 workId 区分主键`() {
+        val a = Parsers.keyOf(TaskType.WORK, "1", "第 3 章作业", "/work/phone/task-work?courseId=1&workId=9001")
+        val b = Parsers.keyOf(TaskType.WORK, "1", "第 3 章作业", "/work/phone/task-work?courseId=1&workId=9002")
+        assertTrue(a != b)
+        assertEquals("WORK|1|#9001", a)
+    }
+
+    @Test
+    fun `取不到编号时退回标题且保持稳定`() {
+        val a = Parsers.keyOf(TaskType.WORK, "1", "章节测验", "/work/phone/task-work?courseId=1")
+        val b = Parsers.keyOf(TaskType.WORK, "1", "章节测验", "")
+        assertEquals(a, b)
+        assertEquals("WORK|1|章节测验", a)
+    }
+
+    @Test
+    fun `列表里同名的两条作业都会保留`() {
+        val html = """
+            <dl>
+              <dt data="/work/phone/task-work?workId=1" status="1">
+                <h3>章节测验</h3><p>发布时间：2026-10-01 08:00</p><b>未交</b>
+              </dt>
+              <dt data="/work/phone/task-work?workId=2" status="4">
+                <h3>章节测验</h3><p>发布时间：2026-09-01 08:00</p><b>已完成</b>
+              </dt>
+            </dl>
+        """.trimIndent()
+
+        val list = Parsers.workList(html, course)
+        assertEquals(2, list.size)
+        assertEquals(2, list.map { it.key }.distinct().size)
     }
 }

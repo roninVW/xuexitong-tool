@@ -459,11 +459,29 @@ private fun createWebView(
 
     val web = WebView(context)
 
+    /**
+     * 考试页（mooc2-ans / exam/test）是固定宽度的桌面式排版，WebView 默认按 980px 视口
+     * 渲染再缩放，元素就会挤在一起、看起来错位。这类页面按设备宽度渲染才对得上，
+     * 作业页反过来需要 useWideViewPort 才能铺满。所以在每次加载前按地址切换一次。
+     */
+    fun applyViewport(target: String) {
+        val exam = target.contains("mooc2-ans") ||
+            target.contains("/exam/") ||
+            target.contains("exam/test") ||
+            target.contains("reVersionTestStartNew")
+        with(web.settings) {
+            useWideViewPort = !exam
+            loadWithOverviewMode = !exam
+        }
+        Log.d(TAG, "viewport exam=$exam @ $target")
+    }
+
     fun load(target: String, referer: String? = null) {
         val cleaned = cleanUrl(target)
         if (cleaned.isBlank()) return
         currentUrl = cleaned
         Log.d(TAG, "load: $cleaned  referer=$referer")
+        applyViewport(cleaned)
         onState(PageState.Loading)
         val headers = if (referer.isNullOrBlank()) emptyMap() else mapOf("Referer" to referer)
         runCatching { web.loadUrl(cleaned, headers) }
@@ -556,7 +574,10 @@ private fun createWebView(
         mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
         userAgentString = BROWSER_UA
         cacheMode = WebSettings.LOAD_DEFAULT
-        setSupportZoom(false)
+        // 字号固定 100%：跟随系统字号会让 H5 排版错位
+        textZoom = 100
+        // 允许双指缩放（不显示系统缩放按钮），排版仍有偏差时用户可以自己放大
+        setSupportZoom(true)
         builtInZoomControls = false
         displayZoomControls = false
     }
@@ -579,6 +600,8 @@ private fun createWebView(
         override fun onPageFinished(view: WebView?, u: String?) {
             view?.title?.takeIf { it.isNotBlank() }?.let(onTitle)
             onState(PageState.Ready)
+            // 视口切换后重新测量一次，否则仍按上一个页面的宽度排版
+            view?.requestLayout()
             attachBridge()
             // 单页应用可能晚一步替换 window.jsBridge，补两次
             Handler(Looper.getMainLooper()).postDelayed({ runCatching { attachBridge() } }, 600)

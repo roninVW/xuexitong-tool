@@ -82,16 +82,31 @@ class SyncEngine(
         val now = System.currentTimeMillis()
         val existing = dao.allTasks().associateBy { it.key }
         val merged = ArrayList<TaskEntity>()
+        // 只记录「确实拿到了数据」的课程：这些课程才可以清理旧行，抓失败的课不能动
+        val syncedCourses = LinkedHashSet<String>()
         var newCount = 0
 
         for (course in courses) {
             onStep("正在同步 ${course.name}")
             val tasks = runCatching { source.tasks(course) }.getOrNull() ?: continue
+            if (tasks.isNotEmpty()) syncedCourses += course.courseId
             for (task in tasks) {
                 if (existing[task.key] == null && task.status == TaskStatus.TODO) newCount++
                 merged += merge(existing[task.key], task, now)
             }
             delay(250) // 礼貌间隔，别把接口打急了
+        }
+
+        // 清理每门课里「这次没再出现」的旧行：主键改成带 workId 后，旧标题主键的行会变成
+        // 重复条目，必须清掉；顺带也处理老师删掉的作业。
+        if (syncedCourses.isNotEmpty()) {
+            val keepByCourse = merged
+                .filter { it.courseId in syncedCourses }
+                .groupBy({ it.courseId }, { it.key })
+            for ((courseId, keys) in keepByCourse) {
+                if (keys.isEmpty()) continue
+                runCatching { dao.deleteStale(listOf(courseId), keys) }
+            }
         }
 
         // 补详情：① 未交 / 已过期但缺截止时间；② 已批阅但列表页没给分数（考试分数多半只在详情页）。
