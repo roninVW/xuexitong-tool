@@ -21,15 +21,6 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.AnimatedContent
-import com.xxt.board.ui.theme.M3Transitions
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.core.LinearOutSlowInEasing
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.TextButton
@@ -58,7 +49,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.xxt.board.ui.PageSwitcher
 import com.xxt.board.ui.components.BackdropHost
-import com.xxt.board.ui.components.LocalPageFocus
 import com.xxt.board.ui.components.PaperDock
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -108,8 +98,12 @@ import com.xxt.board.ui.settings.SettingsScreen
 import com.xxt.board.ui.stats.StatsScreen
 import com.xxt.board.ui.theme.AccentColors
 import com.xxt.board.ui.components.LocalGlassAlpha
+import com.xxt.board.ui.theme.LocalPageTransition
+import com.xxt.board.ui.theme.PageTransition
+import com.xxt.board.ui.theme.PageTransitionSpec
 import com.xxt.board.ui.theme.ThemeStyle
 import com.xxt.board.ui.theme.XxtTheme
+import com.xxt.board.ui.theme.rememberPageTransitionSpec
 import com.xxt.board.ui.wallpaper.AppWallpaper
 import com.xxt.board.ui.wallpaper.LocalWallpaper
 import com.xxt.board.ui.wallpaper.WallpaperBackdrop
@@ -145,6 +139,9 @@ class MainActivity : ComponentActivity() {
 
                 val backdrop = remember { WallpaperBackdrop() }
                 SideEffect { backdrop.cardBlur = settings.cardBlur }
+                // 全应用唯一一份转场参数（含"尊重系统减少动效"）：
+                // 底部 Tab 切换器从 LocalPageTransition 读，NavHost 直接用这个值。
+                val pageTransition = rememberPageTransitionSpec()
 
                 XxtTheme(
                     dark = dark,
@@ -158,6 +155,7 @@ class MainActivity : ComponentActivity() {
                 ) {
                     CompositionLocalProvider(
                         LocalWallpaper provides backdrop,
+                        LocalPageTransition provides pageTransition,
                         // 0 = 自动（随模糊强度）；否则就是用户手动拉的不透明度
                         LocalGlassAlpha provides settings.glassOpacity
                             .takeIf { it > 0 }?.let { it / 100f },
@@ -167,7 +165,7 @@ class MainActivity : ComponentActivity() {
                                 spec = WallpaperSpec(settings.wallpaperPath, settings.wallpaperVideo),
                                 backdrop = backdrop,
                             )
-                            AppNav(graph = g, settings = settings)
+                            AppNav(graph = g, settings = settings, pageTransition = pageTransition)
                         }
                     }
                 }
@@ -200,7 +198,11 @@ private fun SplashContent() {
 }
 
 @Composable
-private fun AppNav(graph: AppGraph, settings: AppSettings) {
+private fun AppNav(
+    graph: AppGraph,
+    settings: AppSettings,
+    pageTransition: PageTransitionSpec,
+) {
     val nav = rememberNavController()
     val start = if (graph.isLoggedIn()) Routes.MAIN else Routes.LOGIN
     val scope = rememberCoroutineScope()
@@ -226,11 +228,12 @@ private fun AppNav(graph: AppGraph, settings: AppSettings) {
         NavHost(
             navController = nav,
             startDestination = start,
-            // 统一 M3 转场：层级导航走 shared axis X（前进右进、返回左进）
-            enterTransition = { M3Transitions.sharedAxisEnter(forward = true) },
-            exitTransition = { M3Transitions.sharedAxisExit(forward = true) },
-            popEnterTransition = { M3Transitions.sharedAxisEnter(forward = false) },
-            popExitTransition = { M3Transitions.sharedAxisExit(forward = false) },
+            // 统一转场：和底部 Tab 同一套参数（纯位移、同曲线、同时长）。
+            // AnimatedContent 把目标页画在上层，所以新页整屏进来、旧页只退 28%（视差）。
+            enterTransition = { PageTransition.navEnter(pageTransition, forward = true) },
+            exitTransition = { PageTransition.navExit(pageTransition, forward = true) },
+            popEnterTransition = { PageTransition.navEnter(pageTransition, forward = false) },
+            popExitTransition = { PageTransition.navExit(pageTransition, forward = false) },
         ) {
             composable(Routes.MAIN) {
                 var tabName by rememberSaveable { mutableStateOf(AppTab.BOARD.name) }
@@ -248,11 +251,10 @@ private fun AppNav(graph: AppGraph, settings: AppSettings) {
                 val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
 
                 // 采样层在切换器之外：四个页面共享一份，顶栏与 Dock 都从它取内容。
+                // 录制挂在 PageSwitcher 的轨道容器上（整条轨道一起录，窗口坐标），
+                // 所以玻璃就地取样就是"此刻真正画在这一列上的内容"。
                 BackdropHost {
                     PageSwitcher(target = tab) { current ->
-                    // 只有目标页可以录制共享玻璃采样，旧页仅负责按进度退出。
-                    // 动画结束后 current==tab，采样自动恢复，不需要延迟或手动重置 alpha。
-                    CompositionLocalProvider(LocalPageFocus provides (current == tab)) {
                     when (current) {
                         AppTab.BOARD -> BoardScreen(
                             vm = boardVm,
@@ -317,9 +319,9 @@ private fun AppNav(graph: AppGraph, settings: AppSettings) {
                         )
                     }
                     }
-                    }
 
-                    // Dock 画在页面切换器之外：转场时保持静止，不跟随页面淡入淡出
+                    // Dock 画在页面切换器之外：转场时保持静止，采样层里是轨道当前的画面，
+                    // 所以玻璃里看到的就是"此刻压在 Dock 下面的那一页"
                     PaperDock(
                         selected = tab,
                         onSelect = { switchTab(it) },

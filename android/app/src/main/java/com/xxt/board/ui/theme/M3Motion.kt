@@ -2,7 +2,6 @@ package com.xxt.board.ui.theme
 
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.Easing
-import androidx.compose.ui.MotionDurationScale
 
 /**
  * Material 3 motion token —— 按源码 / 设计规范的精确数值重写。
@@ -53,23 +52,18 @@ object M3Easing {
 
     /** emphasized-accelerate = cubic-bezier(0.3, 0, 0.8, 0.15) —— 出场 */
     val EmphasizedAccelerate: Easing = CubicBezierEasing(0.3f, 0f, 0.8f, 0.15f)
+
+    /**
+     * 页面切换专用 = cubic-bezier(0.22, 1, 0.36, 1)。
+     *
+     * 为什么不用 emphasized 系列：那两条是给「带缩放 / 淡入淡出」的转场配的，
+     * 纯位移用 emphasized-decelerate 会前段太软、后段收不住（看起来"发飘"）。
+     * 这条曲线前段推进快、后段长尾减速，位移类转场收尾最自然。
+     * 进、出共用一条，两页节奏才一致（见 [PageTransitionSpec]）。
+     */
+    val PageSwitch: Easing = CubicBezierEasing(0.22f, 1f, 0.36f, 1f)
 }
 
-/**
- * 强制 1× 的动画时长缩放。
- *
- * OriginOS 等 ROM 允许把开发者选项里的「动画程序时长缩放」设成 0，
- * 此时 Compose 所有基于 `AnimationSpec` 的动画会被瞬间完成。M3 的转场时长
- * 是规范的一部分，不该被系统开关吞掉，所以底层驱动时显式覆盖。
- */
-object M3FixedMotionScale : MotionDurationScale {
-    override val scaleFactor: Float get() = 1f
-}
-
-/** fade through 的两段时长（M3: 出 90ms，进 210ms，不重叠） */
-object M3FadeThrough {
-    const val OUT_MS = 90
-    const val IN_MS = 210
-    val TOTAL_MS = OUT_MS + IN_MS
-    const val IN_SCALE = 0.92f
-}
+// 注：这里原来还有一个 `M3FixedMotionScale`（强制 1× 时长缩放，让 ROM 把动画关掉时
+// 也能播完）。它和"尊重系统减少动效"直接冲突，且已无引用，已删除 ——
+// 现在由 `rememberPageTransitionSpec()` 读系统开关并主动降级。

@@ -54,13 +54,13 @@ import com.xxt.board.ui.wallpaper.pageBackground
  *
  * 采样链路：
  *
- * 1. `backdropSource()` 把主内容记录进 [GraphicsLayer]（一页只录一次），并原位绘制。
+ * 1. `backdropSource()` 把主内容记录进 [GraphicsLayer]（整条页面轨道一帧一录），并原位绘制。
  * 2. `GlassSurface` 只在**自己的裁剪区域**（顶栏矩形 / Dock 胶囊）内重绘一份
  *    应用了 RenderEffect 的内容副本：`translate(-(G-L)) { drawLayer(source) }`。
  * 3. 半透明纸面 tint 与前景内容画在这份副本**之外**，因此文字图标绝对清晰。
  *
- * 把 RenderEffect 挂在纯色背景上等于无效果——这里挂的层里只有 `drawLayer(source)`，
- * 即栏后的真实内容，不含任何纯色底。
+ * 采样层是窗口坐标的整条轨道快照，所以玻璃里的内容永远等于"这个位置此刻画着的东西"：
+ * 切页时接缝扫过 Dock，玻璃里的内容也跟着扫过，不会提前采到下一页。
  *
  * 强度 0–40dp（默认 28）；玻璃透明度随滑块由 **0.94 线性变化到 0.58**。
  * Android 12+ 用原生效果，旧版本回退成**同布局**的半透明纸面。
@@ -85,41 +85,42 @@ fun glassAlpha(radiusDp: Int): Float = 0.94f - (radiusDp.coerceIn(0, 40) / 40f) 
  */
 val LocalGlassAlpha = staticCompositionLocalOf<Float?> { null }
 
-/** 被采样的主内容：一块 RenderNode + 它在窗口里的原点 */
-class BackdropState internal constructor(internal val layer: GraphicsLayer) {
-    internal var origin by mutableStateOf(Offset.Zero)
-    /** 是否已经录过至少一帧：没录过时玻璃只画纸面，避免画出上一页的残影 */
-    internal var recorded by mutableStateOf(false)
-}
-
 /**
- * 页面当前的动画变换（切页时由 [com.xxt.board.ui.theme.M3PageSwitcher] 每帧写入）。
+ * 被采样的主内容。两块 RenderNode：
  *
- * 玻璃是**实时遮罩**：采样层里画的内容必须带着页面此刻的位移/缩放，
- * 否则顶栏与 Dock 里会是一张「最终位置」的静止贴图，页面在动、玻璃里的内容不动。
+ * - [pageLayer]：**单页**（前台页）的完整一帧，给页面里的顶栏玻璃用；
+ * - [trackLayer]：**整条页面轨道**的完整一帧，给页面外的 Dock 用。
+ *
+ * 为什么必须两块：采样层里不能再画"引用这块采样层"的玻璃 —— 否则 HWUI 会把 RenderNode
+ * 画进它自己（`RenderNode::prepareTreeImpl` 无限递归，直接栈溢出）。
+ * 顶栏玻璃长在页面里，所以它只能取"不含自己"的单页层；
+ * 而 Dock 在轨道之外，只有取整条轨道层，才是"此刻真正压在它背后的内容"。
  */
-class PageMotion {
-    // 用 snapshot state：Dock 的绘制需要读到它们，值变了才会重绘那一帧
-    var translationX by mutableStateOf(0f)
-    var translationY by mutableStateOf(0f)
-    var scale by mutableStateOf(1f)
-}
+class BackdropState internal constructor(
+    internal val pageLayer: GraphicsLayer,
+    internal val trackLayer: GraphicsLayer,
+) {
+    internal var pageOrigin by mutableStateOf(Offset.Zero)
+    /** 单页层是否已经录过至少一帧：没录过时玻璃只画纸面，避免画出上一页的残影 */
+    internal var pageRecorded by mutableStateOf(false)
 
-val LocalPageMotion = staticCompositionLocalOf { PageMotion() }
+    internal var trackOrigin by mutableStateOf(Offset.Zero)
+    internal var trackRecorded by mutableStateOf(false)
+}
 
 /**
  * 当前这一页是不是「前台页」。
  *
- * 切页动画里新旧两页会同时存在，而 [LocalBackdrop] 只有一份采样层；
- * 如果两页都往里录，后画的会把前一页覆盖掉，玻璃里就会闪出另一页的内容。
- * 所以只有前台页录制，后台页照常画自己（不录）。
+ * 切页时轨道上会有两页同时可见，而单页采样层只有一份：两页都往里录，
+ * 后画的会把前一页覆盖掉，顶栏玻璃里就会闪出另一页的内容。所以只有前台页录。
  */
 val LocalPageFocus = staticCompositionLocalOf { true }
 
 @Composable
 fun rememberBackdrop(): BackdropState {
-    val layer = rememberGraphicsLayer()
-    return remember(layer) { BackdropState(layer) }
+    val page = rememberGraphicsLayer()
+    val track = rememberGraphicsLayer()
+    return remember(page, track) { BackdropState(page, track) }
 }
 
 val LocalBackdrop = staticCompositionLocalOf<BackdropState?> { null }
@@ -128,76 +129,87 @@ val LocalBackdrop = staticCompositionLocalOf<BackdropState?> { null }
 @Composable
 fun BackdropHost(modifier: Modifier = Modifier, content: @Composable BoxScope.() -> Unit) {
     val state = rememberBackdrop()
-    // 页面位移只有一份：切页动画写它，Dock（页面外）读它来补偿采样点
-    val motion = remember { PageMotion() }
     // 背景只用纯纸色（不铺点阵/横线纹理）
     androidx.compose.runtime.CompositionLocalProvider(
         LocalBackdrop provides state,
-        LocalPageMotion provides motion,
     ) {
         Box(modifier.fillMaxSize().pageBackground(), content = content)
     }
 }
 
 /**
- * 标在主内容容器上：把**完整一帧**（页面底色 + 壁纸 + 全部主内容）录进采样层。
+ * 把**完整一帧**（页面底色 + 壁纸 + 主内容）录进采样层，并原位绘制。
  *
- * 之前只录 `drawContent()`，采样层是透明底，壁纸与页面背景没进采样层，
- * 于是这些元素穿过顶栏 / Dock 时看起来「没被模糊掉」。现在 record 里先铺
- * 真实背景再画内容；屏幕上仍走原来的 `drawContent()`（不再画一遍 layer），
- * 所以视频壁纸不会被一帧静态图盖住。
+ * @param track true = 录进整条轨道层（Dock 用）；false = 录进单页层（顶栏用）
+ *
+ * 录制一律按**窗口坐标**：先把画布移到窗口原点，再铺底色 / 壁纸 / 内容。
+ * 轨道容器就在窗口原点，所以轨道层里的坐标就是窗口坐标 ——
+ * 玻璃在自己所在位置取样，拿到的就是"此刻画在这一列上的内容"，
+ * 接缝扫到哪、玻璃里的内容就跟到哪，不会提前采到还没进入视口的下一页。
  */
 @Composable
-fun Modifier.backdropSource(): Modifier {
+private fun Modifier.backdropRecord(track: Boolean): Modifier {
     val state = LocalBackdrop.current ?: return this
     if (!blurSupported) return this
-    val focus = LocalPageFocus.current
     val surface = MaterialTheme.colorScheme.surface
     val wallpaper = LocalWallpaper.current
     return this
-        .onGloballyPositioned { state.origin = it.positionInRoot() }
+        .onGloballyPositioned {
+            val at = it.positionInRoot()
+            if (track) state.trackOrigin = at else state.pageOrigin = at
+        }
         .drawWithContent {
             val content = this
-            if (focus) {
-                runCatching {
-                    state.layer.record {
-                        // 采样层统一按**窗口坐标**录制。
-                        // 之前直接录 drawContent()，一旦容器带 padding（设置/统计/课表的
-                        // `.padding(inner)`），层的原点就被顶栏顶下去了；玻璃按原点差平移时
-                        // 整页内容会整体错位，看起来就是「玻璃里显示的是别处的内容」。
-                        // 这里先把画布移到窗口原点，再铺底色 / 壁纸 / 内容。
-                        translate(-state.origin.x, -state.origin.y) {
-                            // 录制层外扩一圈纯背景色：切页时采样区会被推到内容之外，
-                            // 那里没有像素就会糊成黑块，先垫一层同色底再画内容。
-                            val pad = 600f
-                            drawRect(
-                                color = surface,
-                                topLeft = Offset(-pad, -pad),
-                                size = Size(
-                                    size.width + state.origin.x + pad * 2,
-                                    size.height + state.origin.y + pad * 2,
-                                ),
+            val layer = if (track) state.trackLayer else state.pageLayer
+            val origin = if (track) state.trackOrigin else state.pageOrigin
+            runCatching {
+                layer.record {
+                    translate(-origin.x, -origin.y) {
+                        // 录制层外扩一圈纯背景色：轨道上相邻两页正好铺满视口，
+                        // 只有接缝扫过玻璃边缘时才可能采到内容外，先垫一层同色底，
+                        // 免得糊成黑块（这也是"采到空处"的兜底）。
+                        val padX = size.width * 0.6f
+                        val padY = 600f
+                        drawRect(
+                            color = surface,
+                            topLeft = Offset(-padX, -padY),
+                            size = Size(
+                                size.width + origin.x + padX * 2,
+                                size.height + origin.y + padY * 2,
+                            ),
+                        )
+                        val image = wallpaper.image
+                        val screen = wallpaper.screen
+                        if (wallpaper.active && image != null && screen.width > 0) {
+                            drawImage(
+                                image = image,
+                                srcOffset = IntOffset.Zero,
+                                srcSize = IntSize(image.width, image.height),
+                                dstSize = screen,
+                                filterQuality = FilterQuality.Low,
                             )
-                            val image = wallpaper.image
-                            val screen = wallpaper.screen
-                            if (wallpaper.active && image != null && screen.width > 0) {
-                                drawImage(
-                                    image = image,
-                                    srcOffset = IntOffset.Zero,
-                                    srcSize = IntSize(image.width, image.height),
-                                    dstSize = screen,
-                                    filterQuality = FilterQuality.Low,
-                                )
-                            }
-                            content.drawContent()
                         }
+                        content.drawContent()
                     }
-                    state.recorded = true
                 }
+                if (track) state.trackRecorded = true else state.pageRecorded = true
             }
             content.drawContent()
         }
 }
+
+/**
+ * 单页采样层：标在一级页面的**内容根**上（不含顶栏，顶栏玻璃要取这份采样）。
+ */
+@Composable
+fun Modifier.backdropSource(): Modifier =
+    if (LocalPageFocus.current) backdropRecord(track = false) else this
+
+/**
+ * 整条轨道采样层：标在 `PageSwitcher` 的轨道容器上，给页面外的 Dock 用。
+ */
+@Composable
+fun Modifier.trackBackdropSource(): Modifier = backdropRecord(track = true)
 
 /** 两级高斯（平台原生） + ColorMatrix 饱和增强 */
 private fun platformBlurEffect(radiusPx: Float): androidx.compose.ui.graphics.RenderEffect? =
@@ -215,8 +227,13 @@ private fun platformBlurEffect(radiusPx: Float): androidx.compose.ui.graphics.Re
 /**
  * 顶栏 / Dock 的玻璃面板。
  *
+ * 两块采样层都是**窗口坐标**的整帧快照，所以这里只需要把采样点对到玻璃自己的位置：
+ * `translate(-(G - L))`。不涉及页面位移补偿 —— 页面在轨道上怎么动，
+ * 采样层里就是怎么动的，玻璃里永远是这个位置此刻真正画着的内容。
+ *
  * @param radiusDp 0–40dp，0 = 关闭模糊（仍保留同布局半透明纸面）
  * @param tint     玻璃底色（一般传 card）
+ * @param track    true = 取整条轨道层（Dock）；false = 取单页层（页面内的顶栏）
  */
 @Composable
 fun GlassSurface(
@@ -226,18 +243,10 @@ fun GlassSurface(
     modifier: Modifier = Modifier,
     borderColor: Color? = null,
     hairlineColor: Color? = null,
-    /**
-     * 这块玻璃是否画在**页面之外**（Dock 就是）。
-     *
-     * 页面里的顶栏跟着页面一起动，采样层坐标和它一致，不需要补偿；
-     * Dock 是静止的，页面在切页时整体位移了 m，所以它要采样 `dockOrigin − m`，
-     * 玻璃里的内容才会跟着动画一起滑 —— 这样遮罩是"实时"的，不是一张定格的贴图。
-     */
-    outsidePage: Boolean = false,
+    track: Boolean = false,
     content: @Composable BoxScope.() -> Unit,
 ) {
     val state = LocalBackdrop.current
-    val motion = LocalPageMotion.current
     val radius = radiusDp.coerceIn(0, 40)
     val active = blurSupported && radius > 0 && state != null
     // 手动透明度优先；没设过就还是跟着模糊强度走
@@ -251,7 +260,7 @@ fun GlassSurface(
     }
 
     Box(modifier = modifier.clip(shape)) {
-        if (active && effect != null) {
+        if (active && effect != null && state != null) {
             Box(
                 Modifier
                     .matchParentSize()
@@ -262,18 +271,15 @@ fun GlassSurface(
                         renderEffect = effect
                     }
                     .drawBehind {
-                        if (!state.recorded) return@drawBehind
-                        // 页面外的玻璃（Dock）：采样点要减去页面当前位移，
-                        // 玻璃里看到的就是"此刻"页面背后的内容（跟着动画走）
-                        // 录制层已经外扩了纯色底，采样区不会落到空像素上，
-                        // 所以这里恢复完整补偿：玻璃真正跟着页面走。
-                        val mx = if (outsidePage) motion.translationX else 0f
-                        val my = if (outsidePage) motion.translationY else 0f
-                        val dx = glassOrigin.x - state.origin.x - mx
-                        val dy = glassOrigin.y - state.origin.y - my
+                        val layer = if (track) state.trackLayer else state.pageLayer
+                        val origin = if (track) state.trackOrigin else state.pageOrigin
+                        val recorded = if (track) state.trackRecorded else state.pageRecorded
+                        if (!recorded) return@drawBehind
+                        val dx = glassOrigin.x - origin.x
+                        val dy = glassOrigin.y - origin.y
                         // 负号：玻璃局部 (x,y) 要显示同一窗口坐标上的主内容
                         runCatching {
-                            translate(-dx, -dy) { drawLayer(state.layer) }
+                            translate(-dx, -dy) { drawLayer(layer) }
                         }
                     },
             )

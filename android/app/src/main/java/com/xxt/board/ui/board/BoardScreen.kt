@@ -43,7 +43,6 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.DropdownMenuItem
@@ -89,6 +88,7 @@ import com.xxt.board.data.toDomain
 import com.xxt.board.domain.SyncEngine
 import com.xxt.board.domain.TaskBuckets
 import com.xxt.board.ui.AppTab
+import com.xxt.board.ui.components.backdropSource
 import com.xxt.board.ui.components.AppIcons
 import com.xxt.board.ui.components.rememberFlameClock
 import com.xxt.board.ui.components.EmptyState
@@ -99,7 +99,6 @@ import com.xxt.board.ui.components.PaperTopBar
 import com.xxt.board.ui.components.SyncLine
 import com.xxt.board.ui.components.TaskCard
 import com.xxt.board.ui.components.statusLabel
-import com.xxt.board.ui.components.backdropSource
 import com.xxt.board.ui.theme.JournalDivider
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
@@ -260,6 +259,15 @@ fun BoardScreen(
     val filterActive = subject != null || type != null || status != TaskStatus.TODO
     val relogin = message?.contains("登录") == true
 
+    // 顶栏副标题 = 同步状态行。原来它是标题下面单独一行（SyncLine），
+    // 让看板的顶栏比其它三页高一截；现在收进统一的副标题行，四个页面顶栏同高。
+    val statusLine = when {
+        syncing -> "正在同步…"
+        message != null -> message.orEmpty()
+        tasks.isEmpty() -> "还没有数据 · 点这里同步"
+        else -> "已同步 ${subjects.size} 门课 · ${tasks.size} 项"
+    }
+
     val density = LocalDensity.current
     val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     val contentTop = with(density) { barBottom.toDp() } + 4.dp
@@ -380,6 +388,7 @@ fun BoardScreen(
                     }
 
                 // 始终保留同一个 item，用可见性动画完成放大/恢复，避免增删 item 时跳变。
+                // 一言不再占顶栏（顶栏高度要统一）：空间够时在这里放大，空间不够时以小字排在列表末尾。
                 item(key = "quote") {
                     AnimatedVisibility(
                         visible = bigQuote,
@@ -394,6 +403,23 @@ fun BoardScreen(
                             text = quote,
                             availableHeight = quoteHeight,
                             onClick = { vm.refreshQuote() },
+                        )
+                    }
+                    AnimatedVisibility(
+                        visible = showQuote && !relogin && !bigQuote,
+                        enter = fadeIn(tween(200)) + expandVertically(tween(240)),
+                        exit = fadeOut(tween(160)) + shrinkVertically(tween(220)),
+                    ) {
+                        Text(
+                            text = "「$quote」",
+                            style = PaperType.quote,
+                            color = p.muted,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 2.dp)
+                                .clickable { vm.refreshQuote() },
                         )
                     }
                 }
@@ -498,50 +524,9 @@ fun BoardScreen(
                         )
                     }
                 },
-                below = {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(start = 16.dp, end = 14.dp, top = 2.dp, bottom = 8.dp),
-                    ) {
-                        SyncLine(
-                            syncing = syncing,
-                            message = message,
-                            summary = if (tasks.isEmpty()) {
-                                "还没有数据 · 点这里同步"
-                            } else {
-                                "已同步 ${subjects.size} 门课 · ${tasks.size} 项"
-                            },
-                            onRelogin = onNeedLogin,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { vm.refresh() },
-                        )
-                        if (p.journal) {
-                            Spacer(Modifier.height(2.dp))
-                            JournalDivider(color = p.line)
-                        }
-                        AnimatedVisibility(
-                            visible = showQuote && !relogin && !bigQuote,
-                            enter = fadeIn(tween(200)) + expandVertically(tween(240)),
-                            exit = fadeOut(tween(160)) + shrinkVertically(tween(220)),
-                        ) {
-                            Column {
-                                Spacer(Modifier.height(2.dp))
-                                Text(
-                                    text = "「$quote」",
-                                    style = PaperType.quote,
-                                    color = p.muted,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable { vm.refreshQuote() },
-                                )
-                            }
-                        }
-                    }
-                },
+                subtitle = statusLine,
+                subtitleAccent = relogin || message != null,
+                onSubtitleClick = { if (relogin) onNeedLogin() else vm.refresh() },
             )
         }
 

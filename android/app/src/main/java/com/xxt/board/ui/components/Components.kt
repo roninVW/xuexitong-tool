@@ -135,6 +135,16 @@ fun kindLabel(task: Task): String = when {
 /** 标题行高：所有页面的顶栏标题都放在这条 44dp 的行里，位置完全一致 */
 val TopBarRowHeight = 44.dp
 
+/**
+ * 副标题行高：**所有页面都留这一行**（没有副标题就留空）。
+ *
+ * 之前只有课表 / 统计有副标题、设置没有、看板把同步行塞在标题下面，
+ * 于是四个页面的顶栏一个高一个矮 —— 切页时顶栏下沿一高一低，割裂感就是从这里来的。
+ * 现在顶栏总高固定为 [TopBarRowHeight] + [TopBarSubtitleHeight]（+ 状态栏），
+ * 内容区起点也就一致了。
+ */
+val TopBarSubtitleHeight = 20.dp
+
 /** 标题左内边距：全应用统一，和 M3 TopAppBar 的 16dp 对齐 */
 val TopBarStartPadding = 16.dp
 
@@ -195,21 +205,27 @@ fun PaperTopBar(
             Spacer(Modifier.weight(1f))
             actions?.invoke()
         }
-        if (subtitle != null) {
-            Text(
-                text = subtitle,
-                style = PaperType.sync,
-                color = if (subtitleAccent) p.accent else p.muted,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = TopBarStartPadding, end = TopBarStartPadding, bottom = 6.dp)
-                    .then(
+        // 副标题行始终占位：没有副标题也留这一行，四个一级页的顶栏总高才完全一致
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(TopBarSubtitleHeight)
+                .padding(start = TopBarStartPadding, end = TopBarStartPadding),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            if (subtitle != null) {
+                Text(
+                    text = subtitle,
+                    style = PaperType.sync,
+                    color = if (subtitleAccent) p.accent else p.muted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.then(
                         if (onSubtitleClick != null) Modifier.clickable(onClick = onSubtitleClick)
                         else Modifier,
                     ),
-            )
+                )
+            }
         }
         below()
     }
@@ -612,7 +628,8 @@ fun PaperDock(
         tint = cs.surfaceContainerHigh,
         shape = dockShape,
         borderColor = cs.outlineVariant,
-        outsidePage = true,
+        // Dock 在页面轨道之外：取整条轨道层，玻璃里才是"此刻压在它背后的那一页"
+        track = true,
         modifier = modifier
             .height(dockHeight)
             .shadow(8.dp, dockShape, clip = false),

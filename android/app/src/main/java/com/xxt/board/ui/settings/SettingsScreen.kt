@@ -26,8 +26,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.foundation.shape.RoundedCornerShape
-import com.xxt.board.ui.components.GlassSurface
 import com.xxt.board.ui.components.backdropSource
+import com.xxt.board.ui.components.GlassSurface
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -130,7 +130,8 @@ fun SettingsScreen(
                     modifier = Modifier.matchParentSize(),
                     content = {},
                 )
-                PaperTopBar(title = "设置")
+                // 副标题行和另外三页保持一致（顶栏同高），内容就是四段分区名
+                PaperTopBar(title = "设置", subtitle = "外观 · 内容 · 账号 · 关于")
             }
         },
     ) { inner ->

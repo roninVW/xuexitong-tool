@@ -460,3 +460,70 @@ z-index ≥ 5 + 内部无可交互元素」的节点 `pointer-events: none`，�
 `BoardScreen` 里已有 `bigQuote`（`derivedStateOf`）：
 剩余 = 视口高 − 列表末项底部 − (78dp + 手势条)，`BigQuote(minHeight = 剩余)` 居中放大；
 空间不足时回落到顶栏小字。78dp = Dock 66dp + 底边距 12dp。
+
+## 转场重做 · 单轨道 / 顶栏同高 / Dock 采样修正
+
+### 1. 页面切换：单条水平轨道
+
+`ui/PageSwitcher.kt` 用自定义 `Layout` 实现了一条**轨道**：
+
+```
+视口：[ 0 ................. 1080 ]   clipToBounds
+轨道：      [ 作业 ][ 课表 ][ 统计 ][ 设置 ]   ← 同一平面、同一 Z、互不覆盖
+             ↑ track = -i × w 时第 i 页落在视口里
+```
+
+| 项 | 值 |
+|---|---|
+| 轨迹 | 纯水平位移（只有 `translationX`），无缩放 / 旋转 / 弹跳 / 整页 alpha |
+| 曲线 | `cubic-bezier(0.22, 1, 0.36, 1)`（`M3Easing.PageSwitch`） |
+| 时长 | 380ms（进、出共用同一个进度，节奏一致） |
+| 方向 | 下标变大 = 轨道左移；后退同一个量反着走，没有第二套参数 |
+| 中断 | `Animatable<Float>` 从**当前值**续跑，不 `snapTo(0)`、不跳帧 |
+| 绘制 | 视口外的页不 `place`（不绘制）；目标页例外，它要留在采样层里 |
+
+四个页面**始终组合**（滚动位置/状态一直保留），切页时不再临时组合，也就没有"首帧组合卡一下"。
+
+### 2. 顶栏同高
+
+`PaperTopBar` 增加固定副标题行 `TopBarSubtitleHeight = 20.dp`，**没有副标题也占位**：
+
+| 页面 | 顶栏内容 |
+|---|---|
+| 作业 | 标题（全部/作业/考试 ⌄）+ 同步状态行（原来单独一行的 `SyncLine` 收进副标题） |
+| 课表 | 课表 + 第 N 周 · N 节 · 共 N 条 |
+| 统计 | 统计 + 共 N 项 · N 个科目 |
+| 设置 | 设置 + 外观 · 内容 · 账号 · 关于 |
+
+顶栏总高统一为 44 + 20（+ 状态栏），切页时下沿不再一高一低。
+一言原来占顶栏第三行（导致作业页更高），现在统一放到列表末尾的 `quote` item：
+空间够就放大，不够就小字。
+
+### 3. Dock 玻璃采样：两层，各取所需
+
+问题：Dock 的模糊会**提前采到还没进入视口的下一页**（切「作业 → 设置」时 Dock 里先出现设置页的色块）。
+
+根因：原来只有一张采样层、且只让"目标页"录，Dock 靠 `PageMotion` 把采样点挪回去 ——
+一张整页图无论怎么挪，都答不出"接缝左边是哪一页"。
+
+现在 `BackdropState` 有两块 RenderNode：
+
+| 层 | 录什么 | 给谁 |
+|---|---|---|
+| `pageLayer` | 前台页的完整一帧（内容根，不含顶栏） | 页面内的顶栏玻璃 |
+| `trackLayer` | **整条轨道**的完整一帧（窗口坐标） | 页面外的 Dock |
+
+两块层都是窗口坐标，玻璃只做 `translate(-(G-L))` 就地取样，**不需要任何位移补偿**：
+接缝扫到哪，Dock 里的内容就跟到哪。
+
+> 为什么必须两块：采样层里不能再画"引用这块采样层"的玻璃，否则 HWUI 会把 RenderNode
+> 画进它自己（`RenderNode::prepareTreeImpl` 无限递归 → SIGSEGV，实测必崩）。
+> 顶栏玻璃长在页面里，只能取"不含自己"的单页层；Dock 在轨道外，取轨道层才对。
+
+同时删掉：`M3Transitions.kt`（旧的 shared axis 那套）、`PageMotion` / `LocalPageMotion`
+（位移补偿）、`M3FixedMotionScale`（强制 1× 时长缩放，和"尊重减少动效"冲突）。
+
+### 4. 减少动效
+
+`rememberPageTransitionSpec()` 读并监听 `Settings.Global.ANIMATOR_DURATION_SCALE`：
+为 0（无障碍"移除动画"/开发者选项时长缩放 0）时用 `PageTransition.Reduced` —— 零位移、零时长，直接换页。
