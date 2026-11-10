@@ -14,8 +14,9 @@ android {
         applicationId = "com.xxt.board"
         minSdk = 26
         targetSdk = 36
-        versionCode = 47
-        versionName = "0.50.0"
+        versionCode = 48
+        versionName = "0.51.0"
+        testInstrumentationRunner = "android.test.InstrumentationTestRunner"
         vectorDrawables { useSupportLibrary = true }
     }
 
@@ -51,6 +52,10 @@ ksp {
 }
 
 dependencies {
+    androidTestImplementation(libs.kyant.backdrop)
+    androidTestCompileOnly(files("${android.sdkDirectory}/platforms/android-${android.compileSdk}/optional/android.test.runner.jar",
+        "${android.sdkDirectory}/platforms/android-${android.compileSdk}/optional/android.test.base.jar"))
+    implementation(libs.kyant.backdrop)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)

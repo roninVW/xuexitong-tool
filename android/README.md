@@ -1,6 +1,8 @@
 # 作业板 · Android 客户端
 
-Kotlin + Jetpack Compose。视觉按**纸感令牌**实现：浅纸 #F6F0E2 / 深纸 #151517、卡片 #FFFDF7 / #1E1E21、墨色 #2B2419 / #EDEDEF；**默认唯一基色 #C4763F**，考试色 / 荧光色 / 状态色 / 科目点全部由它 HSV 派生。Material 3 只承担控件与交互。模糊只用平台 `RenderEffect.createBlurEffect`。Dock 是 MAIN 层的共享组件，不参与页面切换动画。`compileSdk 36 / targetSdk 36 / minSdk 26`（目标 Android 16）。
+Kotlin + Jetpack Compose。视觉按**纸感令牌**实现：浅纸 #F6F0E2 / 深纸 #151517、卡片 #FFFDF7 / #1E1E21、墨色 #2B2419 / #EDEDEF；**默认唯一基色 #C4763F**，考试色 / 荧光色 / 状态色 / 科目点全部由它 HSV 派生。Material 3 只承担控件与交互。顶部高斯模糊使用平台 `RenderEffect.createBlurEffect`；可选液态玻璃材质使用 Backdrop 的官方折射管线，两者独立。Dock 是 MAIN 层的共享组件，不参与页面切换动画。`compileSdk 36 / targetSdk 36 / minSdk 26`（目标 Android 16）。
+
+> v0.51.0：新增独立全局液态玻璃材质与透明度/折射度调节；作业页二级菜单采用整体单块玻璃面板，保留连续展开与筛选动画；各页顶部高斯模糊统一。一言按实际可用空间调整位置。作业截止提醒支持开关、提前时间、通知权限与点击详情，排除已完成/过期作业。保留原主题、配色及默认材质。versionCode 48；Release APK 使用现有签名，可覆盖更新。
 
 > v0.3.0：**回滚 v0.2.0 的 Material 3 重写**，回到纸感视觉；毛玻璃重写为真正生效的原生实现；课表从占位改成可导入。
 > v0.6.0：列表按顺序逐条**从左飞入**（正弦缓动）；**跳转学习通**改成四级降级 + 可见反馈；应用内 WebView 顶部加状态栏/挖孔遮挡。

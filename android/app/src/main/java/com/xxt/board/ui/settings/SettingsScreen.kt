@@ -29,11 +29,11 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
+import com.xxt.board.ui.liquid.MaterialAlertDialog as AlertDialog
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.foundation.shape.RoundedCornerShape
 import com.xxt.board.ui.components.backdropSource
-import com.xxt.board.ui.components.GlassSurface
+import com.xxt.board.ui.components.GaussianTopBar
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -47,14 +47,24 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
+import com.xxt.board.ui.liquid.MaterialSlider
+import com.xxt.board.ui.liquid.MaterialSwitch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
+import android.Manifest
+import android.os.Build
+import com.xxt.board.work.DeadlineScheduler
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -146,6 +156,13 @@ fun SettingsScreen(
     onBlur: (Int) -> Unit,
     onGlassOpacity: (Int) -> Unit,
     onThemeStyle: (String) -> Unit,
+    onMaterialStyle: (String) -> Unit,
+    onLiquidTransparency:(Int)->Unit,
+    onLiquidRefraction:(Float)->Unit,
+    onLiquidParametersFinished:()->Unit,
+    onDeadlineReminders: (Boolean) -> Unit,
+    onDeadlineLeadMinutes: (Int) -> Unit,
+    onNotificationPermissionChanged: () -> Unit,
     onWorkColor: (Long) -> Unit,
     onExamColor: (Long) -> Unit,
     onShowQuote: (Boolean) -> Unit,
@@ -157,6 +174,25 @@ fun SettingsScreen(
     val cs = MaterialTheme.colorScheme
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    var notificationGranted by remember { mutableStateOf(DeadlineScheduler.canNotify(context)) }
+    var permissionForDeadline by remember { mutableStateOf(false) }
+    val notificationPermission=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        notificationGranted=DeadlineScheduler.canNotify(context)
+        if(granted && permissionForDeadline) onDeadlineReminders(true)
+        permissionForDeadline=false
+        onNotificationPermissionChanged()
+    }
+    val owner=LocalLifecycleOwner.current
+    DisposableEffect(owner) {
+        val observer=LifecycleEventObserver { _, event -> if(event==Lifecycle.Event.ON_RESUME) {
+            notificationGranted=DeadlineScheduler.canNotify(context)
+            onNotificationPermissionChanged()
+        } }
+        owner.lifecycle.addObserver(observer)
+        onDispose { owner.lifecycle.removeObserver(observer) }
+    }
+    var editLead by remember { mutableStateOf(false) }
+    var leadText by remember(settings.deadlineLeadMinutes) { mutableStateOf(settings.deadlineLeadMinutes.toString()) }
     var confirmLogout by remember { mutableStateOf(false) }
 
     // ================================================================ 检查更新
@@ -230,15 +266,7 @@ fun SettingsScreen(
     Scaffold(
         containerColor = Color.Transparent,
         topBar = {
-            Box {
-                GlassSurface(
-                    radiusDp = blurRadius,
-                    tint = cs.surfaceContainerHigh,
-                    shape = RoundedCornerShape(0.dp),
-                    hairlineColor = cs.outlineVariant.copy(alpha = 0.55f),
-                    modifier = Modifier.matchParentSize(),
-                    content = {},
-                )
+            GaussianTopBar(blurRadius) {
                 // 副标题行和另外三页保持一致（顶栏同高），内容就是四段分区名
                 PaperTopBar(title = "设置", subtitle = "外观 · 内容 · 账号 · 关于")
             }
@@ -248,12 +276,11 @@ fun SettingsScreen(
         Box(Modifier.fillMaxSize().backdropSource()) {
             LazyColumn(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .padding(inner),
+                    .fillMaxSize(),
                 contentPadding = PaddingValues(
                     start = 16.dp,
                     end = 16.dp,
-                    top = 12.dp,
+                    top = inner.calculateTopPadding() + 12.dp,
                     bottom = 80.dp + 12.dp + navBottom + 24.dp,
                 ),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -287,10 +314,35 @@ fun SettingsScreen(
                                     selected = index == i,
                                     onClick = { onThemeStyle(item.key) },
                                     shape = SegmentedButtonDefaults.itemShape(i, styles.size),
-                                ) { Text(item.label) }
+                                ) { Text(item.label, maxLines = 1) }
                             }
                         }
                         Spacer(Modifier.height(16.dp))
+                        JournalDivider(color = cs.outlineVariant)
+                        Text("全局材质", style = MaterialTheme.typography.titleSmall, color = cs.primary,
+                            modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp))
+                        Text("统一用于 Dock、作业页菜单、所有滑动条与开关，主题和配色独立保留。",
+                            color = cs.onSurfaceVariant, style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp))
+                        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                            listOf("default" to "默认材质", "liquid" to "液态玻璃材质").forEachIndexed { i, (key, label) ->
+                                SegmentedButton(
+                                    selected = settings.materialStyle == key,
+                                    enabled = key != "liquid" || android.os.Build.VERSION.SDK_INT >= 33,
+                                    onClick = { onMaterialStyle(key) },
+                                    shape = SegmentedButtonDefaults.itemShape(i, 2),
+                                ) { Text(label, maxLines = 1) }
+                            }
+                        }
+                        Spacer(Modifier.height(16.dp))
+                        if (android.os.Build.VERSION.SDK_INT < 33) {
+                            Text(
+                                "液态玻璃需要 Android 13 或更新版本。",
+                                color = cs.onSurfaceVariant,
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.padding(horizontal = 16.dp),
+                            )
+                        }
                         JournalDivider(color = cs.outlineVariant)
                         Spacer(Modifier.height(12.dp))
                         Text(
@@ -338,7 +390,7 @@ fun SettingsScreen(
                                 color = cs.primary,
                             )
                         }
-                        Slider(
+                        MaterialSlider(
                             value = settings.blurRadius.toFloat(),
                             onValueChange = { onBlur(it.toInt()) },
                             valueRange = 0f..40f,
@@ -355,6 +407,28 @@ fun SettingsScreen(
                         Spacer(Modifier.height(14.dp))
                         JournalDivider(color = cs.outlineVariant)
                         Spacer(Modifier.height(12.dp))
+                        if(settings.materialStyle=="liquid" && Build.VERSION.SDK_INT>=33) {
+                            Row(Modifier.padding(horizontal=16.dp),verticalAlignment=Alignment.CenterVertically) {
+                                Text("玻璃透明度",style=MaterialTheme.typography.titleSmall,color=cs.primary)
+                                Spacer(Modifier.weight(1f))
+                                Text(settings.liquidTransparency.toString()+"%",style=MaterialTheme.typography.labelLarge,color=cs.primary)
+                            }
+                            MaterialSlider(settings.liquidTransparency.toFloat(),{onLiquidTransparency(it.toInt())},
+                                valueRange=0f..100f,onValueChangeFinished=onLiquidParametersFinished,
+                                modifier=Modifier.padding(horizontal=16.dp))
+                            Text("仅控制液态玻璃表面透明程度，折射强度独立保留。",style=MaterialTheme.typography.bodySmall,
+                                color=cs.onSurfaceVariant,modifier=Modifier.padding(horizontal=16.dp))
+                            Spacer(Modifier.height(12.dp))
+                            Row(Modifier.padding(horizontal=16.dp),verticalAlignment=Alignment.CenterVertically) {
+                                Text("玻璃折射度",style=MaterialTheme.typography.titleSmall,color=cs.primary)
+                                Spacer(Modifier.weight(1f))
+                                Text(String.format(java.util.Locale.ROOT,"%.2f×",settings.liquidRefraction),style=MaterialTheme.typography.labelLarge,color=cs.primary)
+                            }
+                            MaterialSlider(settings.liquidRefraction,onLiquidRefraction,valueRange=0f..2f,
+                                onValueChangeFinished=onLiquidParametersFinished,modifier=Modifier.padding(horizontal=16.dp))
+                            Text("调节真实背景折射；0× 关闭折射，1× 为原始强度。",style=MaterialTheme.typography.bodySmall,
+                                color=cs.onSurfaceVariant,modifier=Modifier.padding(horizontal=16.dp))
+                        } else {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.padding(horizontal = 16.dp),
@@ -367,7 +441,7 @@ fun SettingsScreen(
                                 color = cs.primary,
                             )
                         }
-                        Slider(
+                        MaterialSlider(
                             value = settings.glassOpacity.toFloat(),
                             onValueChange = { onGlassOpacity(it.toInt()) },
                             valueRange = 0f..95f,
@@ -380,6 +454,7 @@ fun SettingsScreen(
                             color = cs.onSurfaceVariant,
                             modifier = Modifier.padding(horizontal = 16.dp),
                         )
+                        }
                         Spacer(Modifier.height(4.dp))
                         Text(
                             text = "引擎：$blurEngineLabel",
@@ -422,10 +497,39 @@ fun SettingsScreen(
                         SwitchItem(
                             icon = AppIcons.Notifications,
                             title = "通知提醒",
-                            subtitle = "关闭后不再后台同步，也不会发通知",
+                            subtitle = "后台同步与同步结果通知；作业截止提醒单独设置",
                             checked = settings.notifications,
-                            onCheckedChange = onNotifications,
+                            onCheckedChange = { enabled ->
+                                onNotifications(enabled)
+                                if(enabled && Build.VERSION.SDK_INT>=33 && !notificationGranted) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                            },
                         )
+                    }
+                }
+
+                item { SectionLabel("作业截止提醒") }
+                item {
+                    M3Card {
+                        SwitchItem(AppIcons.Notifications,"作业截止提醒","仅提醒未完成且未截止的作业",settings.deadlineReminders) { enabled ->
+                            if(enabled && Build.VERSION.SDK_INT>=33 && !notificationGranted) {
+                                permissionForDeadline=true
+                                notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                            } else onDeadlineReminders(enabled)
+                        }
+                        Row(Modifier.fillMaxWidth().padding(horizontal=16.dp),verticalAlignment=Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("提前提醒",style=MaterialTheme.typography.titleSmall)
+                                Text("截止前 ${settings.deadlineLeadMinutes} 分钟",style=MaterialTheme.typography.bodySmall,color=cs.onSurfaceVariant)
+                            }
+                            TextButton(onClick={leadText=settings.deadlineLeadMinutes.toString();editLead=true}) {Text("修改时间")}
+                        }
+                        Text("退出应用后仍由系统调度；省电或强制停止可能延迟提醒。已完成和已过期作业不会提醒。",
+                            modifier=Modifier.padding(16.dp),style=MaterialTheme.typography.bodySmall,color=cs.onSurfaceVariant)
+                        if(!notificationGranted) {
+                            Text("系统通知权限尚未开启。",modifier=Modifier.padding(horizontal=16.dp),color=cs.error,style=MaterialTheme.typography.bodySmall)
+                            TextButton(onClick={context.startActivity(Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                                .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE,context.packageName))},modifier=Modifier.padding(horizontal=8.dp)) {Text("打开系统通知设置")}
+                        }
                     }
                 }
 
@@ -497,6 +601,17 @@ fun SettingsScreen(
 }
     }
 
+    if(editLead) {
+        val minutes=leadText.toIntOrNull()
+        AlertDialog(onDismissRequest={editLead=false},title={Text("提前多久提醒")},
+            text={Column(verticalArrangement=Arrangement.spacedBy(10.dp)) {
+                Text("输入 1 至 10080 分钟（最多 7 天）。修改后自动更新所有未完成作业的提醒。")
+                OutlinedTextField(value=leadText,onValueChange={leadText=it.filter(Char::isDigit).take(5)},
+                    singleLine=true,label={Text("提前分钟数")},keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number),
+                    isError=minutes==null || minutes !in 1..10080)
+            }},confirmButton={TextButton(onClick={minutes?.let(onDeadlineLeadMinutes);editLead=false},enabled=minutes!=null && minutes in 1..10080){Text("保存")}},
+            dismissButton={TextButton(onClick={editLead=false}){Text("取消")}})
+    }
     if (confirmLogout) {
         AlertDialog(
             onDismissRequest = { confirmLogout = false },
@@ -716,7 +831,7 @@ private fun SwitchItem(
             )
         },
         trailingContent = {
-            Switch(checked = checked, onCheckedChange = onCheckedChange)
+            MaterialSwitch(checked = checked, onCheckedChange = onCheckedChange)
         },
         colors = ListItemDefaults.colors(containerColor = Color.Transparent),
     )

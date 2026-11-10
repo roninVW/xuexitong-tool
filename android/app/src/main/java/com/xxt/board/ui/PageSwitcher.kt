@@ -66,6 +66,7 @@ import kotlin.math.roundToInt
 fun PageSwitcher(
     target: AppTab,
     modifier: Modifier = Modifier,
+    captureTrack: Boolean = true,
     content: @Composable (AppTab) -> Unit,
 ) {
     val spec = LocalPageTransition.current
@@ -97,14 +98,14 @@ fun PageSwitcher(
             .fillMaxSize()
             .clipToBounds()
             // 整条轨道录一份采样（窗口坐标），Dock 玻璃就地取样就是它背后的真实内容
-            .trackBackdropSource()
+            .then(if (captureTrack) Modifier.trackBackdropSource() else Modifier)
             .onSizeChanged { widthPx = it.width },
         content = {
             // 四页都在轨道上、都保持组合：切页时不需要临时组合（不会因为首帧组合卡一下），
             // 各页滚动位置 / 状态也一直保留（SaveableStateHolder 只是多一层保险）。
             AppTab.entries.forEach { tab ->
                 key(tab) {
-                    // 单页采样层只有一份：只让目标页录，否则两页互覆盖、顶栏玻璃会闪
+                    // Each page now owns its header capture; focus is retained for other page behavior.
                     CompositionLocalProvider(LocalPageFocus provides (tab == target)) {
                         holder.SaveableStateProvider(tab.name) { content(tab) }
                     }

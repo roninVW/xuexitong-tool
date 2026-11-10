@@ -7,6 +7,7 @@ import android.webkit.CookieManager
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -20,11 +21,18 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.graphics.toArgb
+import com.xxt.board.ui.components.GaussianWebFrame
+import com.xxt.board.ui.components.LocalGlassAlpha
+import com.xxt.board.ui.components.glassAlpha
 import androidx.compose.ui.viewinterop.AndroidView
 import com.xxt.board.data.ChaoxingHttp
 
@@ -58,40 +66,31 @@ fun harvestCookies(): String {
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun LoginScreen(onLoggedIn: (String) -> Unit) {
+fun LoginScreen(blurRadius: Int = 28, onLoggedIn: (String) -> Unit) {
     val cs = MaterialTheme.colorScheme
     var loading by remember { mutableStateOf(true) }
     var handled by remember { mutableStateOf(false) }
 
-    Scaffold(
-        containerColor = cs.surface,
-        topBar = {
-            Column(Modifier.fillMaxWidth().background(cs.surfaceContainer)) {
-                PaperTopBar(title = "登录学习通")
-                if (loading) {
-                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+    val density = LocalDensity.current
+    val alpha = LocalGlassAlpha.current ?: glassAlpha(blurRadius)
+    var headerHeight by remember { mutableIntStateOf(0) }
+    Box(Modifier.fillMaxSize()) {
+        AndroidView(modifier = Modifier.fillMaxSize(),
+            update = { frame -> frame.configure(headerHeight, with(density) { blurRadius.dp.toPx() },
+                cs.surfaceContainerHigh.copy(alpha = alpha).toArgb()) },
+            factory = { context ->
+                val frame = GaussianWebFrame(context, cs.surface.toArgb())
+                val body = android.widget.LinearLayout(context).apply {
+                    orientation = android.widget.LinearLayout.VERTICAL
                 }
-            }
-        },
-    ) { inner ->
-        Column(
-            Modifier
-                .fillMaxSize()
-                .padding(inner),
-        ) {
-            Text(
-                text = "登录成功后自动返回，不保存密码",
-                style = MaterialTheme.typography.bodyMedium,
-                color = cs.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-            )
-
-            AndroidView(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                factory = { context ->
-                    WebView(context).apply {
+                body.addView(android.widget.TextView(context).apply {
+                    text = "登录成功后自动返回，不保存密码"
+                    setTextColor(cs.onSurfaceVariant.toArgb())
+                    textSize = 14f
+                    setPadding(with(density) { 16.dp.roundToPx() }, with(density) { 10.dp.roundToPx() },
+                        with(density) { 16.dp.roundToPx() }, with(density) { 10.dp.roundToPx() })
+                })
+                val web =                     WebView(context).apply {
                         settings.javaScriptEnabled = true
                         settings.domStorageEnabled = true
                         settings.saveFormData = false
@@ -124,8 +123,13 @@ fun LoginScreen(onLoggedIn: (String) -> Unit) {
                         }
                         loadUrl(ChaoxingHttp.LOGIN_URL)
                     }
-                },
-            )
+                body.addView(web, android.widget.LinearLayout.LayoutParams(-1, 0, 1f))
+                frame.setPageContent(body, web)
+                frame
+            })
+        Column(Modifier.fillMaxWidth().onSizeChanged { headerHeight = it.height }) {
+            PaperTopBar(title = "登录学习通")
+            if (loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
         }
     }
 }

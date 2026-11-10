@@ -11,6 +11,7 @@ import android.util.Log
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebSettings
+import com.xxt.board.ui.components.PageBackdropHost
 import com.xxt.board.ui.components.PaperTopBar
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -23,12 +24,12 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.activity.compose.BackHandler
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.TextButton
+import com.xxt.board.ui.liquid.MaterialTextButton as TextButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.AlertDialog
+import com.xxt.board.ui.liquid.MaterialAlertDialog as AlertDialog
 import android.webkit.JsPromptResult
 import android.webkit.JsResult
-import androidx.compose.material3.IconButton
+import com.xxt.board.ui.liquid.MaterialIconButton as IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.TopAppBar
@@ -55,8 +56,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.Button
+import com.xxt.board.ui.liquid.MaterialTonalButton as FilledTonalButton
+import com.xxt.board.ui.liquid.MaterialButton as Button
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Column
@@ -108,14 +109,37 @@ import com.xxt.board.ui.wallpaper.AppWallpaper
 import com.xxt.board.ui.wallpaper.LocalWallpaper
 import com.xxt.board.ui.wallpaper.WallpaperBackdrop
 import com.xxt.board.ui.wallpaper.WallpaperSpec
+import com.xxt.board.work.DeadlineScheduler
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import com.xxt.board.data.toDomain
 import com.xxt.board.work.SyncScheduler
 import kotlinx.coroutines.launch
 import java.util.Locale
+import android.os.Build
+import androidx.compose.ui.zIndex
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.kyant.backdrop.backdrops.rememberCombinedBackdrop
+import com.xxt.board.ui.liquid.LocalLiquidMaterial
+import com.xxt.board.ui.liquid.LiquidMaterial
+import com.xxt.board.ui.liquid.LocalLiquidWallpaper
+import com.xxt.board.ui.liquid.LocalLiquidBackdrop
+import com.xxt.board.ui.liquid.LiquidDock
+import com.xxt.board.ui.liquid.LiquidBoardMenuState
+import com.xxt.board.ui.liquid.LiquidBoardMenus
 
 class MainActivity : ComponentActivity() {
+    private var deadlineTaskKey by mutableStateOf<String?>(null)
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        deadlineTaskKey=intent.getStringExtra(DeadlineScheduler.EXTRA_TASK_KEY)
+    }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        deadlineTaskKey=intent.getStringExtra(DeadlineScheduler.EXTRA_TASK_KEY)
 
         val app = application as XxtApp
 
@@ -142,6 +166,17 @@ class MainActivity : ComponentActivity() {
                 // 全应用唯一一份转场参数（含"尊重系统减少动效"）：
                 // 底部 Tab 切换器从 LocalPageTransition 读，NavHost 直接用这个值。
                 val pageTransition = rememberPageTransitionSpec()
+                val liquid = settings.materialStyle == "liquid" && Build.VERSION.SDK_INT >= 33
+                var previewTransparency by remember { mutableStateOf<Int?>(null) }
+                var previewRefraction by remember { mutableStateOf<Float?>(null) }
+                LaunchedEffect(settings.liquidTransparency,settings.liquidRefraction) {
+                    if(previewTransparency==settings.liquidTransparency)previewTransparency=null
+                    if(previewRefraction==settings.liquidRefraction)previewRefraction=null
+                }
+                val uiSettings=settings.copy(liquidTransparency=previewTransparency?:settings.liquidTransparency,
+                    liquidRefraction=previewRefraction?:settings.liquidRefraction)
+                val opticalScope=rememberCoroutineScope()
+                val wallpaperGlass = rememberLayerBackdrop()
 
                 XxtTheme(
                     dark = dark,
@@ -154,18 +189,34 @@ class MainActivity : ComponentActivity() {
                     style = ThemeStyle.of(settings.themeStyle),
                 ) {
                     CompositionLocalProvider(
+                        LocalLiquidMaterial provides LiquidMaterial(uiSettings.liquidTransparency/100f,uiSettings.liquidRefraction),
                         LocalWallpaper provides backdrop,
+                        LocalLiquidWallpaper provides wallpaperGlass.takeIf { liquid },
+                        LocalLiquidBackdrop provides wallpaperGlass.takeIf { liquid },
                         LocalPageTransition provides pageTransition,
                         // 0 = 自动（随模糊强度）；否则就是用户手动拉的不透明度
                         LocalGlassAlpha provides settings.glassOpacity
                             .takeIf { it > 0 }?.let { it / 100f },
                     ) {
                         Box(Modifier.fillMaxSize()) {
+                            Box(Modifier.fillMaxSize().then(if (liquid) Modifier.layerBackdrop(wallpaperGlass)
+                                .background(MaterialTheme.colorScheme.surface) else Modifier)) {
                             AppWallpaper(
                                 spec = WallpaperSpec(settings.wallpaperPath, settings.wallpaperVideo),
                                 backdrop = backdrop,
                             )
-                            AppNav(graph = g, settings = settings, pageTransition = pageTransition)
+                            }
+                            AppNav(graph = g, settings = uiSettings, pageTransition = pageTransition,
+                                onLiquidTransparency={previewTransparency=it},onLiquidRefraction={previewRefraction=it},
+                                onLiquidParametersFinished={
+                                    val transparency=previewTransparency?:settings.liquidTransparency
+                                    val refraction=previewRefraction?:settings.liquidRefraction
+                                    opticalScope.launch {g.settings.setLiquidParameters(transparency,refraction)}
+                                },
+                                deadlineKey=deadlineTaskKey,onDeadlineConsumed={
+                                    deadlineTaskKey=null
+                                    intent.removeExtra(DeadlineScheduler.EXTRA_TASK_KEY)
+                                })
                         }
                     }
                 }
@@ -201,12 +252,30 @@ private fun SplashContent() {
 private fun AppNav(
     graph: AppGraph,
     settings: AppSettings,
+    onLiquidTransparency:(Int)->Unit,
+    onLiquidRefraction:(Float)->Unit,
+    onLiquidParametersFinished:()->Unit,
     pageTransition: PageTransitionSpec,
+    deadlineKey: String?,
+    onDeadlineConsumed: () -> Unit,
 ) {
     val nav = rememberNavController()
     val start = if (graph.isLoggedIn()) Routes.MAIN else Routes.LOGIN
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+
+    var authenticated by remember { mutableStateOf(graph.isLoggedIn()) }
+    LaunchedEffect(deadlineKey,authenticated) {
+        if(deadlineKey==null || !authenticated) return@LaunchedEffect
+        val task=withContext(Dispatchers.IO){graph.db.dao().task(deadlineKey)?.toDomain()}
+        onDeadlineConsumed()
+        if(task!=null) {
+            val url=webUrlOf(task.url)
+            val host=Uri.parse(url).host.orEmpty().lowercase(Locale.ROOT)
+            if(host=="chaoxing.com" || host.endsWith(".chaoxing.com"))
+                openWebPage(context,url,task.title,settings.darkMode?:false)
+        } else toast(context,"这份作业已不在本机缓存中")
+    }
 
     val boardVm: BoardViewModel = viewModel(
         factory = viewModelFactory {
@@ -254,15 +323,29 @@ private fun AppNav(
                 // 录制挂在 PageSwitcher 的轨道容器上（整条轨道一起录，窗口坐标），
                 // 所以玻璃就地取样就是"此刻真正画在这一列上的内容"。
                 BackdropHost {
-                    PageSwitcher(target = tab) { current ->
+                    val wallpaperGlass = LocalLiquidWallpaper.current
+                    val trackGlass = rememberLayerBackdrop {
+                        if (!wallpaper.active) drawRect(cs.surface)
+                        drawContent()
+                    }
+                    val glass = if (wallpaperGlass != null) rememberCombinedBackdrop(wallpaperGlass, trackGlass) else null
+                    val glassMenus = remember { LiquidBoardMenuState() }
+                    LaunchedEffect(tab, glass != null) { glassMenus.dismiss() }
+                    // Controls sample the background plus their own track, never the page track
+                    // containing themselves. The Dock/menu can sample the complete page track.
+                    CompositionLocalProvider(LocalLiquidBackdrop provides wallpaperGlass) {
+                    PageSwitcher(target = tab, captureTrack = glass == null, modifier = Modifier.zIndex(0f)
+                        .then(if (glass != null) Modifier.layerBackdrop(trackGlass) else Modifier)) { current ->
+                    PageBackdropHost {
                     when (current) {
                         AppTab.BOARD -> BoardScreen(
                             vm = boardVm,
+                            glassMenus = glassMenus.takeIf { glass != null },
                             blurRadius = settings.blurRadius,
                             flameEnabled = settings.flameEffect,
                             showQuote = settings.showQuote,
                             // 应用内网页 = 独立原生 Activity（WebView 不进 Compose，避免测量/触摸被干扰）
-                            onOpenWeb = { task -> openWebPage(context, task.url, task.title, webDark) },
+                            onOpenWeb = { task -> openWebPage(context, task.url, task.title, webDark, settings.blurRadius, settings.glassOpacity) },
                             // 卡片上的「学习通」= 跳学习通 App（失败会回落到应用内页面）
                             onJump = { task ->
                                 scope.launch {
@@ -271,12 +354,14 @@ private fun AppNav(
                                         graph.source.resolveOpenUrl(task.key, task.url)
                                     }.getOrDefault(task.url)
                                     openInChaoxing(context, target, task.title) { url ->
-                                        openWebPage(context, url, task.title, webDark)
+                                        openWebPage(context, url, task.title, webDark, settings.blurRadius, settings.glassOpacity)
                                     }
                                 }
                             },
                             onNeedLogin = {
                                 graph.vault.clear()
+                                authenticated=false
+                                scope.launch(Dispatchers.IO){DeadlineScheduler.reconcile(context,graph)}
                                 nav.navigate(Routes.LOGIN) { popUpTo(0) }
                             },
                             onNavigate = { next -> switchTab(next) },
@@ -301,6 +386,12 @@ private fun AppNav(
                             onBlur = { v -> scope.launch { graph.settings.setBlurRadius(v) } },
                             onGlassOpacity = { v -> scope.launch { graph.settings.setGlassOpacity(v) } },
                             onThemeStyle = { v -> scope.launch { graph.settings.setThemeStyle(v) } },
+                            onMaterialStyle = { v -> scope.launch { graph.settings.setMaterialStyle(v) } },
+                            onLiquidTransparency=onLiquidTransparency,onLiquidRefraction=onLiquidRefraction,
+                            onLiquidParametersFinished=onLiquidParametersFinished,
+                            onDeadlineReminders={v -> scope.launch {graph.settings.setDeadlineReminders(v)}},
+                            onDeadlineLeadMinutes={v -> scope.launch {graph.settings.setDeadlineLeadMinutes(v)}},
+                            onNotificationPermissionChanged={scope.launch(Dispatchers.IO){DeadlineScheduler.reconcile(context,graph)}},
                             onWorkColor = { v -> scope.launch { graph.settings.setWorkColor(v) } },
                             onExamColor = { v -> scope.launch { graph.settings.setExamColor(v) } },
                             onShowQuote = { v -> scope.launch { graph.settings.setShowQuote(v) } },
@@ -313,16 +404,26 @@ private fun AppNav(
                             },
                             onLogout = {
                                 graph.vault.clear()
+                                authenticated=false
+                                scope.launch(Dispatchers.IO){DeadlineScheduler.reconcile(context,graph)}
                                 nav.navigate(Routes.LOGIN) { popUpTo(0) }
                             },
                             onNavigate = { next -> switchTab(next) },
                         )
                     }
                     }
+                    }
 
                     // Dock 画在页面切换器之外：转场时保持静止，采样层里是轨道当前的画面，
                     // 所以玻璃里看到的就是"此刻压在 Dock 下面的那一页"
-                    PaperDock(
+                    if (glass != null) {
+                        LiquidDock(
+                            selected = tab, onSelect = { glassMenus.dismiss(); switchTab(it) }, backdrop = glass,
+                            modifier = Modifier.align(Alignment.BottomCenter).zIndex(1f)
+                                .padding(start = 14.dp, end = 14.dp, bottom = 12.dp + navBottom),
+                        )
+                        LiquidBoardMenus(glassMenus, glass, Modifier.zIndex(2f))
+                    } else PaperDock(
                         selected = tab,
                         onSelect = { switchTab(it) },
                         blurRadius = settings.blurRadius,
@@ -330,12 +431,15 @@ private fun AppNav(
                             .align(Alignment.BottomCenter)
                             .padding(start = 14.dp, end = 14.dp, bottom = 12.dp + navBottom),
                     )
+                    }
                 }
             }
 
             composable(Routes.LOGIN) {
-                LoginScreen { cookies ->
+                LoginScreen(blurRadius = settings.blurRadius) { cookies ->
                     graph.vault.save(cookies)
+                    authenticated=true
+                    scope.launch(Dispatchers.IO){DeadlineScheduler.reconcile(context,graph)}
                     nav.navigate(Routes.MAIN) { popUpTo(0) }
                 }
             }

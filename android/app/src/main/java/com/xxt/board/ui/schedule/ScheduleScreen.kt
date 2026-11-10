@@ -30,14 +30,14 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
+import com.xxt.board.ui.liquid.MaterialAlertDialog as AlertDialog
 import com.xxt.board.ui.components.backdropSource
-import com.xxt.board.ui.components.GlassSurface
+import com.xxt.board.ui.components.GaussianTopBar
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.IconButton
+import com.xxt.board.ui.liquid.MaterialIconButton as IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.TopAppBar
@@ -46,7 +46,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import com.xxt.board.ui.liquid.MaterialTextButton as TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -192,15 +192,7 @@ fun ScheduleScreen(
     Scaffold(
         containerColor = Color.Transparent,
         topBar = {
-            Box {
-                GlassSurface(
-                    radiusDp = blurRadius,
-                    tint = cs.surfaceContainerHigh,
-                    shape = RoundedCornerShape(0.dp),
-                    hairlineColor = cs.outlineVariant.copy(alpha = 0.55f),
-                    modifier = Modifier.matchParentSize(),
-                    content = {},
-                )
+            GaussianTopBar(blurRadius) {
                 PaperTopBar(
                     title = "课表",
                     subtitle = message ?: "第 $week 周 · ${shown.size} 节 · 共 ${entries.size} 条",
@@ -261,7 +253,8 @@ fun ScheduleScreen(
             Column(
                 Modifier
                     .fillMaxSize()
-                    .padding(inner),
+                    .verticalScroll(rememberScrollState())
+                    .padding(top = inner.calculateTopPadding()),
             ) {
                 if (entries.isEmpty()) {
                     EmptyState(
@@ -284,7 +277,7 @@ fun ScheduleScreen(
                         count = shown.size,
                         onChange = { week = it.coerceIn(1, maxWeek) },
                     )
-                    Timetable(entries = shown, modifier = Modifier.weight(1f))
+                    Timetable(entries = shown)
                 }
                 Spacer(Modifier.height(80.dp + 12.dp + navBottom))
             }
@@ -364,7 +357,6 @@ private fun WeekSwitcher(week: Int, maxWeek: Int, count: Int, onChange: (Int) ->
 private fun Timetable(entries: List<ScheduleEntity>, modifier: Modifier = Modifier) {
     val cs = MaterialTheme.colorScheme
     val hScroll = rememberScrollState()
-    val vScroll = rememberScrollState()
 
     Column(modifier.fillMaxWidth()) {
         Row(Modifier.padding(start = 16.dp)) {
@@ -386,8 +378,7 @@ private fun Timetable(entries: List<ScheduleEntity>, modifier: Modifier = Modifi
 
         Row(
             Modifier
-                .fillMaxSize()
-                .verticalScroll(vScroll)
+                .height(RowHeight * Sections)
                 .padding(start = 16.dp),
         ) {
             Column(Modifier.width(30.dp)) {

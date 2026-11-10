@@ -19,7 +19,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Card
 import androidx.compose.foundation.shape.RoundedCornerShape
 import com.xxt.board.ui.components.backdropSource
-import com.xxt.board.ui.components.GlassSurface
+import com.xxt.board.ui.components.GaussianTopBar
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LinearProgressIndicator
@@ -87,15 +87,7 @@ fun StatsScreen(
     Scaffold(
         containerColor = Color.Transparent,
         topBar = {
-            Box {
-                GlassSurface(
-                    radiusDp = blurRadius,
-                    tint = cs.surfaceContainerHigh,
-                    shape = RoundedCornerShape(0.dp),
-                    hairlineColor = cs.outlineVariant.copy(alpha = 0.55f),
-                    modifier = Modifier.matchParentSize(),
-                    content = {},
-                )
+            GaussianTopBar(blurRadius) {
                 PaperTopBar(
                     title = "统计",
                     subtitle = "共 ${tasks.size} 项 · ${bySubject.size} 个科目",
@@ -125,12 +117,11 @@ fun StatsScreen(
             ) {
             LazyColumn(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .padding(inner),
+                    .fillMaxSize(),
                 contentPadding = PaddingValues(
                     start = 16.dp,
                     end = 16.dp,
-                    top = 12.dp,
+                    top = inner.calculateTopPadding() + 12.dp,
                     bottom = 80.dp + 12.dp + navBottom + 24.dp,
                 ),
                 verticalArrangement = Arrangement.spacedBy(12.dp),

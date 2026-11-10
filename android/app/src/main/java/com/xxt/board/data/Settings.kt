@@ -1,6 +1,9 @@
 package com.xxt.board.data
 
 import android.content.Context
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
@@ -35,11 +38,19 @@ data class AppSettings(
     val cardBlur: Boolean = true,
     /** 界面风格："paper" 纸感 / "journal" 手账（默认手账） */
     val themeStyle: String = "journal",
+    /** Global material, independent of the paper/journal theme. */
+    val materialStyle: String = "default",
+    val liquidTransparency: Int = 50,
+    /** Actual Backdrop lens amount multiplier, independent from opacity and blur. */
+    val liquidRefraction: Float = 1f,
+    /** 独立的作业截止提醒，默认关闭。 */
+    val deadlineReminders: Boolean = false,
+    val deadlineLeadMinutes: Int = 60,
     /** 玻璃纸面不透明度 %（0 = 自动，随模糊强度变化） */
     val glassOpacity: Int = 0,
 )
 
-class SettingsStore(private val context: Context) {
+class SettingsStore(context: Context, private val preferences: DataStore<Preferences> = context.settingsDataStore) {
 
     private object K {
         val BLUR = intPreferencesKey("blur")
@@ -54,10 +65,16 @@ class SettingsStore(private val context: Context) {
         val WALLPAPER_VIDEO = booleanPreferencesKey("wallpaper_video")
         val CARD_BLUR = booleanPreferencesKey("card_blur")
         val THEME_STYLE = stringPreferencesKey("theme_style")
+        val BASE_THEME_STYLE = stringPreferencesKey("base_theme_style")
+        val MATERIAL_STYLE = stringPreferencesKey("material_style")
+        val LIQUID_TRANSPARENCY = intPreferencesKey("liquid_transparency")
+        val LIQUID_REFRACTION = floatPreferencesKey("liquid_refraction_strength")
         val GLASS_OPACITY = intPreferencesKey("glass_opacity")
+        val DEADLINE_REMINDERS = booleanPreferencesKey("deadline_reminders")
+        val DEADLINE_LEAD = intPreferencesKey("deadline_lead_minutes")
     }
 
-    val flow: Flow<AppSettings> = context.settingsDataStore.data.map { p ->
+    val flow: Flow<AppSettings> = preferences.data.map { p ->
         AppSettings(
             blurRadius = p[K.BLUR] ?: 28,
             darkMode = when (p[K.DARK] ?: -1) {
@@ -74,14 +91,19 @@ class SettingsStore(private val context: Context) {
             wallpaperPath = p[K.WALLPAPER]?.takeIf { it.isNotBlank() },
             wallpaperVideo = p[K.WALLPAPER_VIDEO] ?: false,
             cardBlur = p[K.CARD_BLUR] ?: true,
-            themeStyle = p[K.THEME_STYLE] ?: "journal",
+            themeStyle = resolveThemeStyle(p[K.THEME_STYLE], p[K.BASE_THEME_STYLE]),
+            materialStyle = resolveMaterialStyle(p[K.MATERIAL_STYLE], p[K.THEME_STYLE]),
             glassOpacity = p[K.GLASS_OPACITY] ?: 0,
+            liquidTransparency = (p[K.LIQUID_TRANSPARENCY] ?: 50).coerceIn(0,100),
+            liquidRefraction = (p[K.LIQUID_REFRACTION] ?: 1f).takeIf{it.isFinite()}?.coerceIn(0f,2f)?:1f,
+            deadlineReminders = p[K.DEADLINE_REMINDERS] ?: false,
+            deadlineLeadMinutes = (p[K.DEADLINE_LEAD] ?: 60).coerceIn(1, 10080),
         )
     }
 
-    suspend fun setBlurRadius(dp: Int) = context.settingsDataStore.edit { it[K.BLUR] = dp }
+    suspend fun setBlurRadius(dp: Int) = preferences.edit { it[K.BLUR] = dp }
 
-    suspend fun setDarkMode(value: Boolean?) = context.settingsDataStore.edit {
+    suspend fun setDarkMode(value: Boolean?) = preferences.edit {
         it[K.DARK] = when (value) {
             true -> 1
             false -> 0
@@ -89,20 +111,20 @@ class SettingsStore(private val context: Context) {
         }
     }
 
-    suspend fun setWorkColor(argb: Long) = context.settingsDataStore.edit { it[K.WORK] = argb }
+    suspend fun setWorkColor(argb: Long) = preferences.edit { it[K.WORK] = argb }
 
     /** 0 = 恢复「跟随作业色」 */
-    suspend fun setExamColor(argb: Long) = context.settingsDataStore.edit { it[K.EXAM] = argb }
+    suspend fun setExamColor(argb: Long) = preferences.edit { it[K.EXAM] = argb }
 
-    suspend fun setShowQuote(value: Boolean) = context.settingsDataStore.edit { it[K.QUOTE] = value }
+    suspend fun setShowQuote(value: Boolean) = preferences.edit { it[K.QUOTE] = value }
 
-    suspend fun setNotifications(value: Boolean) = context.settingsDataStore.edit { it[K.NOTIFY] = value }
+    suspend fun setNotifications(value: Boolean) = preferences.edit { it[K.NOTIFY] = value }
 
-    suspend fun setFlameEffect(value: Boolean) = context.settingsDataStore.edit { it[K.FLAME] = value }
+    suspend fun setFlameEffect(value: Boolean) = preferences.edit { it[K.FLAME] = value }
 
-    suspend fun markSynced(at: Long) = context.settingsDataStore.edit { it[K.LAST] = at }
+    suspend fun markSynced(at: Long) = preferences.edit { it[K.LAST] = at }
 
-    suspend fun setWallpaper(path: String?, video: Boolean) = context.settingsDataStore.edit {
+    suspend fun setWallpaper(path: String?, video: Boolean) = preferences.edit {
         if (path.isNullOrBlank()) {
             it.remove(K.WALLPAPER)
             it[K.WALLPAPER_VIDEO] = false
@@ -112,10 +134,34 @@ class SettingsStore(private val context: Context) {
         }
     }
 
-    suspend fun setCardBlur(value: Boolean) = context.settingsDataStore.edit { it[K.CARD_BLUR] = value }
+    suspend fun setCardBlur(value: Boolean) = preferences.edit { it[K.CARD_BLUR] = value }
 
-    suspend fun setThemeStyle(value: String) = context.settingsDataStore.edit { it[K.THEME_STYLE] = value }
+    suspend fun setThemeStyle(value: String) = preferences.edit {
+        // Persist the legacy material before removing the old liquid theme marker.
+        it[K.MATERIAL_STYLE] = resolveMaterialStyle(it[K.MATERIAL_STYLE], it[K.THEME_STYLE])
+        it[K.THEME_STYLE] = value.takeIf { key -> key == "paper" || key == "journal" } ?: "journal"
+    }
 
-    suspend fun setGlassOpacity(value: Int) = context.settingsDataStore.edit { it[K.GLASS_OPACITY] = value }
+    suspend fun setMaterialStyle(value: String) = preferences.edit {
+        it[K.THEME_STYLE] = resolveThemeStyle(it[K.THEME_STYLE], it[K.BASE_THEME_STYLE])
+        it[K.MATERIAL_STYLE] = if (value == "liquid") "liquid" else "default"
+    }
+
+    suspend fun setLiquidParameters(transparency:Int,refraction:Float)=preferences.edit {
+        it[K.LIQUID_TRANSPARENCY]=transparency.coerceIn(0,100)
+        it[K.LIQUID_REFRACTION]=refraction.takeIf{it.isFinite()}?.coerceIn(0f,2f)?:1f
+    }
+    suspend fun setLiquidTransparency(value:Int)=preferences.edit {it[K.LIQUID_TRANSPARENCY]=value.coerceIn(0,100)}
+    suspend fun setLiquidRefraction(value:Float)=preferences.edit {it[K.LIQUID_REFRACTION]=value.takeIf{it.isFinite()}?.coerceIn(0f,2f)?:1f}
+    suspend fun setGlassOpacity(value: Int) = preferences.edit { it[K.GLASS_OPACITY] = value }
+    suspend fun setDeadlineReminders(value: Boolean) = preferences.edit { it[K.DEADLINE_REMINDERS] = value }
+    suspend fun setDeadlineLeadMinutes(value: Int) = preferences.edit { it[K.DEADLINE_LEAD] = value.coerceIn(1, 10080) }
 
 }
+
+internal fun resolveThemeStyle(stored: String?, legacyBase: String?): String =
+    (if (stored == "liquid") legacyBase else stored)
+        .takeIf { it == "paper" || it == "journal" } ?: "journal"
+
+internal fun resolveMaterialStyle(stored: String?, legacyTheme: String?): String =
+    if (stored == "liquid" || (stored == null && legacyTheme == "liquid")) "liquid" else "default"

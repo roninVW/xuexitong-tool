@@ -30,8 +30,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilledTonalButton
+import com.xxt.board.ui.liquid.MaterialFilterChip as FilterChip
+import com.xxt.board.ui.liquid.MaterialTonalButton as FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -169,6 +169,7 @@ fun PaperTopBar(
     leading: (@Composable () -> Unit)? = null,
     titleTrailing: (@Composable () -> Unit)? = null,
     titleOverlay: (@Composable () -> Unit)? = null,
+    titleContent: (@Composable () -> Unit)? = null,
     actions: (@Composable () -> Unit)? = null,
     below: @Composable ColumnScope.() -> Unit = {},
 ) {
@@ -185,7 +186,9 @@ fun PaperTopBar(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             leading?.invoke()
-            Row(
+            if (titleContent != null) {
+                titleContent()
+            } else Row(
                 modifier = Modifier
                     .clip(RoundedCornerShape(8.dp))
                     .then(

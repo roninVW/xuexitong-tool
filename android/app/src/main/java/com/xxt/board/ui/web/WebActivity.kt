@@ -43,6 +43,8 @@ import androidx.core.content.res.ResourcesCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import com.xxt.board.ui.components.GaussianWebFrame
+import com.xxt.board.ui.components.glassAlpha
 import com.xxt.board.R
 import com.xxt.board.data.CookieVault
 import com.xxt.board.injectChaoxingCookies
@@ -53,7 +55,7 @@ import java.util.Locale
  * 应用内学习通网页 —— 独立原生 Activity，WebView 不经过 Compose。
  *
  * 与 [siye4366/xxt-Tool] 的 WebActivity 同构（这是对方显示正常的那份实现）：
- * 纯 View 层级放 WebView，不做图形层变换、不做玻璃采样、不套 NavHost 转场。
+ * 纯 View 层级放 WebView；顶部仅对独立内容副本做 Gaussian，不缩放网页、不套 NavHost 转场。
  * 之前在 Compose 里用 `AndroidView` 嵌 WebView，触摸与测量要先过 Compose 这一层，
  * 页面一旦有固定宽度布局（考试页就是）就会错位、元素被挤出可视区。
  *
@@ -77,6 +79,8 @@ class WebActivity : ComponentActivity() {
 
         /** 调用方把当前主题（跟随设置，不一定等于系统）传进来，顶栏才能同色 */
         const val EXTRA_DARK = "dark"
+        const val EXTRA_BLUR_RADIUS = "top_blur_radius"
+        const val EXTRA_GLASS_OPACITY = "top_glass_opacity"
 
         private const val TAG = "XXTWeb"
         private const val DEFAULT_REFERER = "https://mooc1.chaoxing.com/"
@@ -194,15 +198,14 @@ class WebActivity : ComponentActivity() {
 
     /** 顶栏规格与主程序 PaperTopBar 一致：44dp 行高 / 宋体 20sp 粗体 / 纸色底 + 1px 分隔线 */
     private fun buildLayout(title: String) {
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(paper)
-        }
+        val root = FrameLayout(this).apply { setBackgroundColor(paper) }
+        val backdropFrame = GaussianWebFrame(this, paper)
+        root.addView(backdropFrame, FrameLayout.LayoutParams(-1, -1))
+        val header = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setBackgroundColor(paper)
             setPadding(dp(4), 0, dp(8), 0)
         }
 
@@ -241,10 +244,10 @@ class WebActivity : ComponentActivity() {
             LinearLayout.LayoutParams(dp(44), dp(44)),
         )
 
-        root.addView(bar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)))
+        header.addView(bar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)))
 
         // 与主程序顶栏下沿一致的一条细线
-        root.addView(
+        header.addView(
             View(this).apply { setBackgroundColor(hairline) },
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 1),
         )
@@ -254,10 +257,10 @@ class WebActivity : ComponentActivity() {
             progressTintList = android.content.res.ColorStateList.valueOf(accent)
             visibility = View.VISIBLE
         }
-        root.addView(progress, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(2)))
+        header.addView(progress, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(2)))
 
         val stage = FrameLayout(this)
-        root.addView(stage, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        root.addView(header, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
 
         webView = WebView(this)
         stage.addView(
@@ -291,6 +294,12 @@ class WebActivity : ComponentActivity() {
             ),
         )
 
+        backdropFrame.setPageContent(stage, webView)
+        val radius = intent.getIntExtra(EXTRA_BLUR_RADIUS, 28).coerceIn(0, 40)
+        val opacity = intent.getIntExtra(EXTRA_GLASS_OPACITY, 0)
+        val alpha = if (opacity > 0) (opacity / 100f).coerceIn(0.15f, 0.95f) else glassAlpha(radius)
+        val tint = (card and 0x00FFFFFF) or ((alpha * 255).toInt() shl 24)
+        backdropFrame.configure(dp(44) + 1 + dp(2), dp(radius).toFloat(), tint)
         setContentView(root)
 
         // 状态栏 / 导航栏 / 输入法都要避让：边到边之后系统不再自动 resize，
@@ -655,11 +664,14 @@ class WebActivity : ComponentActivity() {
 }
 
 /** 从别处（Compose / 原生）打开学习通页面的统一入口 */
-fun openWebPage(context: Context, url: String, title: String, dark: Boolean = false) {
+fun openWebPage(context: Context, url: String, title: String, dark: Boolean = false,
+    blurRadius: Int = 28, glassOpacity: Int = 0) {
     val intent = Intent(context, WebActivity::class.java).apply {
         putExtra(WebActivity.EXTRA_URL, url)
         putExtra(WebActivity.EXTRA_TITLE, title)
         putExtra(WebActivity.EXTRA_DARK, dark)
+        putExtra(WebActivity.EXTRA_BLUR_RADIUS, blurRadius)
+        putExtra(WebActivity.EXTRA_GLASS_OPACITY, glassOpacity)
     }
     if (context !is android.app.Activity) {
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)

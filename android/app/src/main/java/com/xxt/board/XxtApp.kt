@@ -10,6 +10,10 @@ import com.xxt.board.data.SettingsStore
 import com.xxt.board.domain.SyncEngine
 import com.xxt.board.work.SyncScheduler
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import com.xxt.board.work.DeadlineScheduler
 
 class XxtApp : Application() {
 
@@ -29,7 +33,13 @@ class XxtApp : Application() {
             // 预热解密结果，避免首帧在主线程首次访问 AndroidKeyStore
             runCatching { g?.vault?.load() }
             _graph.value = g
-            if (g != null) runCatching { SyncScheduler.schedule(this@XxtApp) }
+            if (g != null) {
+                runCatching { SyncScheduler.schedule(this@XxtApp) }
+                combine(g.db.dao().observeTasks(), g.settings.flow.map {
+                    it.deadlineReminders to it.deadlineLeadMinutes
+                }.distinctUntilChanged()) { tasks, settings -> tasks to settings }
+                    .collect { runCatching { DeadlineScheduler.reconcile(this@XxtApp, g) } }
+            }
         }
     }
 

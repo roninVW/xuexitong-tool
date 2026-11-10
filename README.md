@@ -8,7 +8,7 @@
 
 ![Android](https://img.shields.io/badge/Android-8.0%2B%20(API%2026--36)-3DDC84?logo=android&logoColor=white)
 ![Kotlin](https://img.shields.io/badge/Kotlin-2.1.10-7F52FF?logo=kotlin&logoColor=white)
-![Compose](https://img.shields.io/badge/Jetpack%20Compose-1.7.8-4285F4?logo=jetpackcompose&logoColor=white)
+![Compose](https://img.shields.io/badge/Jetpack%20Compose-1.9.4-4285F4?logo=jetpackcompose&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-C4763F)
 [![Release](https://img.shields.io/github/v/release/roninVW/xuexitong-tool?color=C4763F&label=release)](https://github.com/roninVW/xuexitong-tool/releases/latest)
 
@@ -67,6 +67,7 @@
 - 已出分的作业 / 考试，卡片右侧直接显示分数（占原本倒计时的位置）；未出分显示剩余时间
 - 右上角可一键跳学习通 App（优先尝试 App 声明的深链，失败回落应用内页面）
 - 下拉刷新即同步一次
+- 作业截止提醒可独立开启并设置提前时间；已完成和已过期作业不提醒，点击通知进入对应作业详情
 
 **课表**
 - 周视图，支持 CSV / TSV / ICS 导入，按周次判定当前周
@@ -76,8 +77,10 @@
 
 **外观**
 - 纸感令牌（浅纸 `#F6F0E2` / 深纸 `#151517`），默认唯一基色 `#C4763F`，其余颜色全部由它 HSV 派生
-- 原生高斯模糊（`RenderEffect`）：顶栏与底部 Dock 的玻璃实时跟随背景
-- Material 3 动效 token 全套（fade through / shared axis / fade），不依赖系统动画倍率
+- 原生高斯模糊（`RenderEffect`）：各页顶部栏采样实际滚动内容，标题与操作按钮保持清晰
+- 可独立切换默认材质与液态玻璃材质（Android 13+）；使用 Backdrop 官方折射，覆盖 Dock、作业页菜单、滑动条与开关
+- 液态玻璃透明度与折射度独立调节、实时预览并保存；作业页子菜单使用整体单块玻璃面板
+- 页面采用单水平轨道切换并保留滚动位置，支持系统减少动效；普通控件保留 Material 触摸反馈
 - 背景壁纸（图片 / GIF / 视频）+ 卡片磨砂；可选卡片边缘火焰（AGSL，API 33+，低版本降级渐变）
 - 手账风格可切换；深浅色跟随系统
 
@@ -89,8 +92,8 @@
 
 ## 安装
 
-1. 到 [Releases](https://github.com/roninVW/xuexitong-tool/releases/latest) 下载最新 `xxt-board-*.apk`
-   （当前版本：[v0.40.1 直接下载](https://github.com/roninVW/xuexitong-tool/releases/download/v0.40.1/xxt-board-v0.40.1-debug.apk)）
+1. 到 [Releases](https://github.com/roninVW/xuexitong-tool/releases/latest) 下载最新 `xuexitong-tool-*.apk`
+   （当前版本：[v0.51.0 直接下载](https://github.com/roninVW/xuexitong-tool/releases/download/v0.51.0/xuexitong-tool-v0.51.0.apk)）
 2. 允许「安装未知来源应用」后安装（自签名包，未上架任何应用商店，也不可能过审）
 3. 打开 → 在登录页正常登录学习通 → 返回看板 → 下拉同步
 

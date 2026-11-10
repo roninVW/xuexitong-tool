@@ -39,6 +39,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalDensity
@@ -142,10 +144,9 @@ fun BackdropHost(modifier: Modifier = Modifier, content: @Composable BoxScope.()
  *
  * @param track true = 录进整条轨道层（Dock 用）；false = 录进单页层（顶栏用）
  *
- * 录制一律按**窗口坐标**：先把画布移到窗口原点，再铺底色 / 壁纸 / 内容。
- * 轨道容器就在窗口原点，所以轨道层里的坐标就是窗口坐标 ——
- * 玻璃在自己所在位置取样，拿到的就是"此刻画在这一列上的内容"，
- * 接缝扫到哪、玻璃里的内容就跟到哪，不会提前采到还没进入视口的下一页。
+ * 每页在自己的局部坐标记录一次，壁纸按窗口坐标对齐。
+ * 玻璃通过窗口位置之差映射采样，不把页面位移重复计算。
+ * 同一记录层直接显示，避免再绘制一次整个页面。
  */
 @Composable
 private fun Modifier.backdropRecord(track: Boolean): Modifier {
@@ -162,39 +163,25 @@ private fun Modifier.backdropRecord(track: Boolean): Modifier {
             val content = this
             val layer = if (track) state.trackLayer else state.pageLayer
             val origin = if (track) state.trackOrigin else state.pageOrigin
-            runCatching {
+            val recorded = runCatching {
                 layer.record {
-                    translate(-origin.x, -origin.y) {
-                        // 录制层外扩一圈纯背景色：轨道上相邻两页正好铺满视口，
-                        // 只有接缝扫过玻璃边缘时才可能采到内容外，先垫一层同色底，
-                        // 免得糊成黑块（这也是"采到空处"的兜底）。
-                        val padX = size.width * 0.6f
-                        val padY = 600f
-                        drawRect(
-                            color = surface,
-                            topLeft = Offset(-padX, -padY),
-                            size = Size(
-                                size.width + origin.x + padX * 2,
-                                size.height + origin.y + padY * 2,
-                            ),
-                        )
-                        val image = wallpaper.image
-                        val screen = wallpaper.screen
-                        if (wallpaper.active && image != null && screen.width > 0) {
-                            drawImage(
-                                image = image,
-                                srcOffset = IntOffset.Zero,
-                                srcSize = IntSize(image.width, image.height),
-                                dstSize = screen,
-                                filterQuality = FilterQuality.Low,
-                            )
+                    drawRect(surface)
+                    val image = wallpaper.image
+                    val screen = wallpaper.screen
+                    if (wallpaper.active && image != null && screen.width > 0) {
+                        translate(-origin.x, -origin.y) {
+                            drawImage(image = image, srcOffset = IntOffset.Zero,
+                                srcSize = IntSize(image.width, image.height), dstSize = screen,
+                                filterQuality = FilterQuality.Low)
                         }
-                        content.drawContent()
                     }
+                    // Source pixels remain in source-local coordinates. GlassSurface maps
+                    // glassOrigin - sourceOrigin once, including moving pages and system insets.
+                    content.drawContent()
                 }
                 if (track) state.trackRecorded = true else state.pageRecorded = true
-            }
-            content.drawContent()
+            }.isSuccess
+            if (recorded) drawLayer(layer) else content.drawContent()
         }
 }
 
@@ -203,7 +190,7 @@ private fun Modifier.backdropRecord(track: Boolean): Modifier {
  */
 @Composable
 fun Modifier.backdropSource(): Modifier =
-    if (LocalPageFocus.current) backdropRecord(track = false) else this
+    backdropRecord(track = false)
 
 /**
  * 整条轨道采样层：标在 `PageSwitcher` 的轨道容器上，给页面外的 Dock 用。
@@ -212,7 +199,7 @@ fun Modifier.backdropSource(): Modifier =
 fun Modifier.trackBackdropSource(): Modifier = backdropRecord(track = true)
 
 /** 两级高斯（平台原生） + ColorMatrix 饱和增强 */
-private fun platformBlurEffect(radiusPx: Float): androidx.compose.ui.graphics.RenderEffect? =
+internal fun platformTopBarBlur(radiusPx: Float): PlatformRenderEffect? =
     runCatching {
         val r = radiusPx.coerceAtLeast(1f)
         val blur = PlatformRenderEffect.createBlurEffect(r, r, Shader.TileMode.CLAMP)
@@ -221,13 +208,13 @@ private fun platformBlurEffect(radiusPx: Float): androidx.compose.ui.graphics.Re
             ColorMatrixColorFilter(saturation),
         )
         // outer 后执行：先模糊，再补回被模糊洗掉的饱和度
-        PlatformRenderEffect.createChainEffect(vibrancy, blur).asComposeRenderEffect()
+        PlatformRenderEffect.createChainEffect(vibrancy, blur)
     }.getOrNull()
 
 /**
  * 顶栏 / Dock 的玻璃面板。
  *
- * 两块采样层都是**窗口坐标**的整帧快照，所以这里只需要把采样点对到玻璃自己的位置：
+ * 采样层是局部坐标的页面帧，采样点按窗口位置之差映射：
  * `translate(-(G - L))`。不涉及页面位移补偿 —— 页面在轨道上怎么动，
  * 采样层里就是怎么动的，玻璃里永远是这个位置此刻真正画着的内容。
  *
@@ -256,7 +243,7 @@ fun GlassSurface(
     val radiusPx = with(LocalDensity.current) { radius.dp.toPx() }
     // 半径不变就复用同一个 RenderEffect，不每帧重建 Shader
     val effect = remember(radiusPx, active) {
-        if (active && radiusPx > 0.5f) platformBlurEffect(radiusPx) else null
+        if (active && radiusPx > 0.5f) platformTopBarBlur(radiusPx)?.asComposeRenderEffect() else null
     }
 
     Box(modifier = modifier.clip(shape)) {
@@ -264,6 +251,12 @@ fun GlassSurface(
             Box(
                 Modifier
                     .matchParentSize()
+                    .layout { measurable, constraints ->
+                        val outset = kotlin.math.ceil(radiusPx * 2f).toInt()
+                        val child = measurable.measure(Constraints.fixed(
+                            constraints.maxWidth + outset * 2, constraints.maxHeight + outset * 2))
+                        layout(constraints.maxWidth, constraints.maxHeight) { child.place(-outset, -outset) }
+                    }
                     .onGloballyPositioned { glassOrigin = it.positionInRoot() }
                     .graphicsLayer {
                         // 离屏合成：效果只作用于本层绘制的「栏后内容副本」
@@ -300,6 +293,31 @@ fun GlassSurface(
                     .background(hairlineColor),
             )
         }
+        content()
+    }
+}
+
+
+/** A page owns its header capture; the outer track stays available to the default Dock. */
+@Composable
+fun PageBackdropHost(content: @Composable () -> Unit) {
+    val parent = LocalBackdrop.current
+    val page = rememberGraphicsLayer()
+    val state = remember(page, parent) { BackdropState(page, parent?.trackLayer ?: page) }
+    androidx.compose.runtime.CompositionLocalProvider(LocalBackdrop provides state) { content() }
+}
+
+/** Shared Gaussian-only top background. Foreground title, icons and menus are outside
+ * the filtered copy. Material/liquid selection never changes this blur pipeline. */
+@Composable
+fun GaussianTopBar(radiusDp: Int, modifier: Modifier = Modifier,
+    content: @Composable BoxScope.() -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    Box(modifier) {
+        GlassSurface(radiusDp = radiusDp, tint = cs.surfaceContainerHigh,
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(0.dp),
+            hairlineColor = cs.outlineVariant.copy(alpha = 0.55f),
+            modifier = Modifier.matchParentSize(), content = {})
         content()
     }
 }

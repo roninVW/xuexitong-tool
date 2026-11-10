@@ -39,10 +39,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
+import com.xxt.board.ui.liquid.MaterialFilterChip as FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.TextButton
+import com.xxt.board.ui.liquid.MaterialTextButton as TextButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.DropdownMenuItem
@@ -53,6 +53,8 @@ import com.xxt.board.ui.theme.SerifSc
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.LaunchedEffect
@@ -92,7 +94,7 @@ import com.xxt.board.ui.components.backdropSource
 import com.xxt.board.ui.components.AppIcons
 import com.xxt.board.ui.components.rememberFlameClock
 import com.xxt.board.ui.components.EmptyState
-import com.xxt.board.ui.components.GlassSurface
+import com.xxt.board.ui.components.GaussianTopBar
 import com.xxt.board.ui.components.GroupHeader
 import com.xxt.board.ui.components.PaperPill
 import com.xxt.board.ui.components.PaperTopBar
@@ -117,6 +119,17 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.net.HttpURLConnection
 import java.net.URL
+import androidx.compose.runtime.SideEffect
+import androidx.compose.ui.layout.boundsInRoot
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.kyant.backdrop.backdrops.rememberCombinedBackdrop
+import com.xxt.board.ui.liquid.LocalLiquidWallpaper
+import com.xxt.board.ui.liquid.LiquidBoardMenuState
+import com.xxt.board.ui.liquid.GlassBoardModel
+import com.xxt.board.ui.liquid.GlassMenuChoice
+import com.xxt.board.ui.liquid.GlassMenu
+import com.xxt.board.ui.liquid.LiquidGlassButton
 
 class BoardViewModel(
     dao: BoardDao,
@@ -194,8 +207,17 @@ fun BoardScreen(
     onJump: (Task) -> Unit,
     onNeedLogin: () -> Unit,
     onNavigate: (AppTab) -> Unit,
+    glassMenus: LiquidBoardMenuState? = null,
 ) {
     val p = LocalPaper.current
+    val wallpaperGlass = LocalLiquidWallpaper.current
+    val wallpaperActive = com.xxt.board.ui.wallpaper.LocalWallpaper.current.active
+    val pageGlass = rememberLayerBackdrop {
+        if (!wallpaperActive) drawRect(p.paper)
+        drawContent()
+    }
+    val entryGlass = if (glassMenus != null && wallpaperGlass != null)
+        rememberCombinedBackdrop(wallpaperGlass, pageGlass) else null
     val tasks by vm.tasks.collectAsState()
     val syncing by vm.syncing.collectAsState()
     val message by vm.message.collectAsState()
@@ -257,6 +279,23 @@ fun BoardScreen(
             .mapValues { (_, list) -> list.count { byKey[it.key] == status } }
     }
     val filterActive = subject != null || type != null || status != TaskStatus.TODO
+    SideEffect {
+        glassMenus?.model = GlassBoardModel(
+            types = listOf(
+                GlassMenuChoice(null, "全部", workCount + examCount, type == null),
+                GlassMenuChoice(TaskType.WORK.name, "作业", workCount, type == TaskType.WORK),
+                GlassMenuChoice(TaskType.EXAM.name, "考试", examCount, type == TaskType.EXAM),
+            ),
+            statuses = TaskStatus.entries.map { GlassMenuChoice(it.name, statusLabel(it), counts[it] ?: 0, status == it) },
+            subjects = listOf(GlassMenuChoice(null, "全部", subjectCounts.values.sum(), subject == null)) +
+                subjects.map { GlassMenuChoice(it.name, it.label, subjectCounts[it] ?: 0, subject == it) },
+            visibleCount = visible.size,
+            onType = { typeName = it },
+            onStatus = { statusName = it },
+            onSubject = { subjectName = if (subjectName == it) null else it },
+            onReset = { statusName = TaskStatus.TODO.name; subjectName = null; typeName = null },
+        )
+    }
     val relogin = message?.contains("登录") == true
 
     // 顶栏副标题 = 同步状态行。原来它是标题下面单独一行（SyncLine），
@@ -276,28 +315,29 @@ fun BoardScreen(
     // LazyColumn 固定预留 Dock(66) + Dock 底边距(12) + 导航栏 + 页面间距(20)。
     // 一言是否能放大只看卡片末尾之后的真实剩余空间，不再要求内容低于某个屏幕比例。
     val dockContentReserve = 66.dp + 12.dp + navBottom + 20.dp + 28.dp
-    val quoteSpace by remember(density, dockContentReserve) {
-        derivedStateOf {
-            val info = listState.layoutInfo
-            val contentEnd = info.visibleItemsInfo
-                .filter { it.key != "quote" }
-                .maxOfOrNull { it.offset + it.size } ?: 0
-            with(density) {
-                (info.viewportSize.height - contentEnd - dockContentReserve.toPx())
-                    .coerceAtLeast(0f)
-                    .toDp()
-            }
-        }
+    val quoteMeasurer=rememberTextMeasurer()
+    var headerQuoteHeight by remember {mutableIntStateOf(0)}
+    val quoteViewport by remember {derivedStateOf{listState.layoutInfo.viewportSize}}
+    val lastContent by remember {derivedStateOf {
+        val info=listState.layoutInfo
+        info.visibleItemsInfo.firstOrNull{it.index==info.totalItemsCount-2 && it.key!="quote"}
+    }}
+    val quoteSpace by remember(density,dockContentReserve) {derivedStateOf {
+        val info=listState.layoutInfo
+        val end=info.visibleItemsInfo.firstOrNull{it.index==info.totalItemsCount-2 && it.key!="quote"}
+        if(end==null)0f else (info.viewportEndOffset-info.afterContentPadding-end.offset-end.size).toFloat()
+    }}
+    // Evaluate the baseline header so the extra quote row cannot make its own placement oscillate.
+    val baselineSpace=quoteSpace+if(listState.firstVisibleItemIndex==0)headerQuoteHeight else 0
+    val quoteWidth=(quoteViewport.width-with(density){36.dp.roundToPx()}).coerceAtLeast(1)
+    val minimumTextWidth=(quoteWidth*0.86f-with(density){36.dp.toPx()}).toInt().coerceAtLeast(1)
+    val minimumQuoteHeight=remember(quote,minimumTextWidth,density.fontScale) {
+        measuredQuoteHeight(quoteMeasurer,quote,minimumTextWidth,15f,density)
     }
-    val bigQuote = showQuote && !relogin && quoteSpace >= 56.dp
-
-    // 放大态锁定高度：只在「进入放大」那一刻快照一次，之后布局怎么变都不再重算，
-    // 避免滚动/刷新时一言反复跳尺寸。退出放大时清空，下次进入重新测量。
-    var lockedQuoteHeight by remember { mutableStateOf<androidx.compose.ui.unit.Dp?>(null) }
-    LaunchedEffect(bigQuote) {
-        lockedQuoteHeight = if (bigQuote) quoteSpace else null
-    }
-    val quoteHeight = lockedQuoteHeight ?: quoteSpace
+    val quoteEnabled=showQuote && !relogin && quoteViewport.width>0
+    val bigQuote=quoteEnabled && fitsInlineQuote(lastContent!=null,baselineSpace,minimumQuoteHeight)
+    val compactQuote=quoteEnabled && !bigQuote
+    val quoteHeight=with(density){baselineSpace.coerceAtLeast(0f).toDp()}
 
 
     Box(Modifier.fillMaxSize()) {
@@ -307,7 +347,7 @@ fun BoardScreen(
             isRefreshing = syncing,
             onRefresh = { vm.refresh() },
             state = refreshState,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().then(if (entryGlass != null) Modifier.layerBackdrop(pageGlass) else Modifier),
             indicator = {
                 PullToRefreshDefaults.Indicator(
                     state = refreshState,
@@ -388,7 +428,7 @@ fun BoardScreen(
                     }
 
                 // 始终保留同一个 item，用可见性动画完成放大/恢复，避免增删 item 时跳变。
-                // 一言不再占顶栏（顶栏高度要统一）：空间够时在这里放大，空间不够时以小字排在列表末尾。
+                // 空间足够保留列表末尾的一言；不足时由顶栏独立行承接。
                 item(key = "quote") {
                     AnimatedVisibility(
                         visible = bigQuote,
@@ -405,34 +445,15 @@ fun BoardScreen(
                             onClick = { vm.refreshQuote() },
                         )
                     }
-                    AnimatedVisibility(
-                        visible = showQuote && !relogin && !bigQuote,
-                        enter = fadeIn(tween(200)) + expandVertically(tween(240)),
-                        exit = fadeOut(tween(160)) + shrinkVertically(tween(220)),
-                    ) {
-                        Text(
-                            text = "「$quote」",
-                            style = PaperType.quote,
-                            color = p.muted,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 2.dp)
-                                .clickable { vm.refreshQuote() },
-                        )
-                    }
+
                 }
             }
         }
 
 
         // ---------------------------------------------------------- 顶栏
-        GlassSurface(
+        GaussianTopBar(
             radiusDp = blurRadius,
-            tint = androidx.compose.material3.MaterialTheme.colorScheme.surfaceContainerHigh,
-            shape = RoundedCornerShape(0.dp),
-            hairlineColor = androidx.compose.material3.MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .fillMaxWidth()
@@ -449,6 +470,18 @@ fun BoardScreen(
                     null -> "全部"
                 },
                 onTitleClick = { typeMenu = true },
+                titleContent = if (entryGlass != null && glassMenus != null) ({
+                    LiquidGlassButton(
+                        backdrop = entryGlass, onClick = { glassMenus.open(GlassMenu.TYPE) }, compact = true,
+                        surfaceVisible = !glassMenus.ownsEntry(GlassMenu.TYPE), subdued = true,
+                        modifier = Modifier.onGloballyPositioned { glassMenus.typeAnchor = it.boundsInRoot() },
+                    ) {
+                        Text(when (type) { TaskType.EXAM -> "考试"; TaskType.WORK -> "作业"; null -> "全部" },
+                            style = PaperType.screenTitle, color = p.ink, maxLines = 1)
+                        Icon(AppIcons.ChevronDown, "显示作业或考试", tint = p.ink2,
+                            modifier = Modifier.size(14.dp).rotate(if (glassMenus.active == GlassMenu.TYPE) 180f else 0f))
+                    }
+                }) else null,
                 titleTrailing = {
                     Icon(
                         imageVector = AppIcons.ChevronDown,
@@ -497,7 +530,18 @@ fun BoardScreen(
                     }
                 },
                 actions = {
-                    Row(
+                    if (entryGlass != null && glassMenus != null) {
+                        LiquidGlassButton(
+                            backdrop = entryGlass, onClick = { glassMenus.open(GlassMenu.FILTER) }, compact = true,
+                            surfaceVisible = !glassMenus.ownsEntry(GlassMenu.FILTER), subdued = true,
+                            selected = filterActive,
+                            modifier = Modifier.onGloballyPositioned { glassMenus.filterAnchor = it.boundsInRoot() },
+                        ) {
+                            Text(statusLabel(status), style = PaperType.groupName, color = p.ink, maxLines = 1)
+                            Icon(AppIcons.ChevronDown, "状态与科目筛选", tint = p.ink2, modifier = Modifier.size(14.dp)
+                                .rotate(if (glassMenus.active == GlassMenu.FILTER) 180f else 0f))
+                        }
+                    } else Row(
                         modifier = Modifier
                             .height(42.dp)
                             .clip(RoundedCornerShape(8.dp))
@@ -527,6 +571,16 @@ fun BoardScreen(
                 subtitle = statusLine,
                 subtitleAccent = relogin || message != null,
                 onSubtitleClick = { if (relogin) onNeedLogin() else vm.refresh() },
+                below = {
+                    AnimatedVisibility(visible=compactQuote,
+                        enter=fadeIn(tween(180))+expandVertically(tween(240,easing=FastOutSlowInEasing)),
+                        exit=fadeOut(tween(160))+shrinkVertically(tween(220,easing=FastOutSlowInEasing)),
+                        modifier=Modifier.onGloballyPositioned{headerQuoteHeight=it.size.height}) {
+                        Text(text="「"+quote+"」",style=PaperType.quote,color=p.ink2,
+                            modifier=Modifier.fillMaxWidth().padding(start=16.dp,end=16.dp,top=4.dp,bottom=10.dp)
+                                .clickable{vm.refreshQuote()})
+                    }
+                },
             )
         }
 
@@ -537,7 +591,7 @@ fun BoardScreen(
 
     // 右上二级菜单：Material 3 的 ModalBottomSheet + FilterChip，
     // 但容器/文字/选中色全部沿用纸感令牌（颜色样式不变）
-    if (filterMenu) {
+    if (filterMenu && glassMenus == null) {
         ModalBottomSheet(
             onDismissRequest = { filterMenu = false },
             containerColor = p.card,
@@ -627,30 +681,10 @@ private fun BigQuote(
 ) {
     val p = LocalPaper.current
     val height = availableHeight.coerceAtLeast(0.dp)
-    // 长句自动降一档字号：避免因为换行过多被 maxLines 截断（显示不全）
-    val lengthScale = when {
-        text.length > 64 -> 0.76f
-        text.length > 42 -> 0.86f
-        else -> 1f
-    }
-    val targetFontSize = (height.value * 0.115f * lengthScale).coerceIn(15f, 28f)
-    val fontSize by animateFloatAsState(
-        targetValue = targetFontSize,
-        animationSpec = tween(240, easing = FastOutSlowInEasing),
-        label = "quote.fontSize",
-    )
-    val markSize by animateFloatAsState(
-        targetValue = targetFontSize * 1.45f,
-        animationSpec = tween(240, easing = FastOutSlowInEasing),
-        label = "quote.markSize",
-    )
-    val maxLines = when {
-        height < 132.dp -> 3
-        height < 220.dp -> 4
-        else -> 5
-    }
-    val verticalPadding = (height.value * 0.04f).coerceIn(6f, 12f).dp
-    val dividerGap = (height.value * 0.04f).coerceIn(5f, 12f).dp
+    val measurer=rememberTextMeasurer()
+    val density=LocalDensity.current
+    val verticalPadding=(height.value*0.04f).coerceIn(6f,12f).dp
+    val dividerGap=(height.value*0.04f).coerceIn(5f,12f).dp
 
     BoxWithConstraints(
         modifier = Modifier
@@ -660,6 +694,18 @@ private fun BigQuote(
         contentAlignment = Alignment.TopCenter,
     ) {
         val textWidthFraction = if (height >= 180.dp) 0.86f else 0.94f
+        val textWidth=(constraints.maxWidth*textWidthFraction-with(density){36.dp.toPx()}).toInt().coerceAtLeast(1)
+        val targetFont=remember(text,textWidth,height,density.fontScale) {
+            var low=15f;var high=28f
+            repeat(6) {
+                val candidate=(low+high)/2f
+                if(measuredQuoteHeight(measurer,text,textWidth,candidate,density,verticalPadding.value,dividerGap.value)<=with(density){height.toPx()})low=candidate else high=candidate
+            }
+            low
+        }
+        val animatedFont by animateFloatAsState(targetFont,tween(240,easing=FastOutSlowInEasing),label="quote.fontSize")
+        val fontSize=minOf(animatedFont,targetFont)
+        val markSize=fontSize*1.45f
         Column(
             modifier = Modifier
                 .fillMaxWidth(textWidthFraction)
@@ -688,8 +734,7 @@ private fun BigQuote(
                 ),
                 color = p.ink2,
                 textAlign = TextAlign.Center,
-                maxLines = maxLines,
-                overflow = TextOverflow.Ellipsis,
+
             )
             Spacer(Modifier.height(dividerGap))
             JournalDivider(
