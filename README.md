@@ -185,4 +185,4 @@ flowchart LR
 - 思路与接口现状参考了开源项目 [siye4366/xxt-Tool](https://github.com/siye4366/xxt-Tool)（MIT）等同行的实测记录——只借鉴方向，没有复制代码。
 - 视觉规范、动效 token 与踩坑记录见 [android/README.md](android/README.md)。
 
-<div align="center"><sub>作业板 v0.40.1 · 只读 · 本地 · 无服务端</sub></div>
+<div align="center"><sub>作业板 · 只读 · 本地 · 无服务端</sub></div>
