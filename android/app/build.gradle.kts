@@ -14,8 +14,8 @@ android {
         applicationId = "com.xxt.board"
         minSdk = 26
         targetSdk = 36
-        versionCode = 46
-        versionName = "0.40.1"
+        versionCode = 47
+        versionName = "0.50.0"
         vectorDrawables { useSupportLibrary = true }
     }
 
@@ -23,6 +23,9 @@ android {
         release {
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // GitHub Release 分发的 APK 与日常调试包同签名（debug keystore），
+            // 用户可以覆盖安装；发布包只是关闭日志/开启压缩
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 

@@ -1,5 +1,7 @@
 package com.xxt.board.ui.settings
 
+import android.content.Intent
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -18,13 +20,17 @@ import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.foundation.shape.RoundedCornerShape
 import com.xxt.board.ui.components.backdropSource
 import com.xxt.board.ui.components.GlassSurface
@@ -60,7 +66,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.xxt.board.BuildConfig
 import com.xxt.board.data.AppSettings
+import com.xxt.board.domain.UpdateChecker
+import com.xxt.board.domain.UpdateException
 import com.xxt.board.ui.AppTab
 import com.xxt.board.ui.components.AppIcons
 import com.xxt.board.ui.components.PaperTopBar
@@ -74,7 +83,41 @@ import com.xxt.board.ui.theme.ThemeStyle
 import com.xxt.board.ui.theme.derivedExamColor
 import com.xxt.board.ui.theme.journalCard
 import com.xxt.board.ui.wallpaper.importWallpaper
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+// ================================================================ 检查更新状态机
+
+/** 检查更新的 UI 状态（Idle → Checking → UpToDate/Available/Error → …） */
+private sealed interface UpdateUiState {
+    data object Idle : UpdateUiState
+    data object Checking : UpdateUiState
+
+    /** GitHub 上有更新的正式 Release */
+    data class Available(val release: UpdateChecker.Release) : UpdateUiState
+
+    /** APK 下载中（0..100） */
+    data class Downloading(val progress: Int) : UpdateUiState
+
+    data object UpToDate : UpdateUiState
+
+    /** Release 没有附带 APK 资产 → 引导到 Release 页面 */
+    data class NoApk(val release: UpdateChecker.Release) : UpdateUiState
+
+    data class Error(val message: String) : UpdateUiState
+}
+
+private fun updateSubtitle(state: UpdateUiState): String = when (state) {
+    UpdateUiState.Idle -> "当前版本 v${BuildConfig.VERSION_NAME} · GitHub Release"
+    UpdateUiState.Checking -> "正在检查更新…"
+    is UpdateUiState.Available -> "发现新版本 ${state.release.tagName}，点击查看"
+    is UpdateUiState.Downloading -> "下载更新包中 ${state.progress}%"
+    UpdateUiState.UpToDate -> "当前已是最新版本"
+    is UpdateUiState.NoApk -> "最新 Release 未附带 APK"
+    is UpdateUiState.Error -> state.message
+}
 
 /** 考试色候选：和作业色拉开色相，一眼能区分「作业 / 考试」 */
 private val ExamSwatches = listOf(
@@ -115,6 +158,72 @@ fun SettingsScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var confirmLogout by remember { mutableStateOf(false) }
+
+    // ================================================================ 检查更新
+    // 状态机：Idle → Checking → { UpToDate | Available | Error }
+    //   Available →（立即更新）→ Downloading → 系统安装界面（用户确认）
+    // 网络与下载全部在 Dispatchers.IO，失败只更新状态，绝不影响其它功能
+    var updateState by remember { mutableStateOf<UpdateUiState>(UpdateUiState.Idle) }
+    var updateJob by remember { mutableStateOf<Job?>(null) }
+
+    fun startUpdateCheck() {
+        updateJob?.cancel()
+        updateJob = scope.launch {
+            updateState = UpdateUiState.Checking
+            try {
+                val release = withContext(Dispatchers.IO) { UpdateChecker.fetchLatestRelease() }
+                val newer = UpdateChecker.compareVersions(
+                    BuildConfig.VERSION_NAME, release.version,
+                ) > 0
+                updateState = if (newer) {
+                    UpdateUiState.Available(release)
+                } else {
+                    UpdateUiState.UpToDate
+                }
+            } catch (e: UpdateException) {
+                updateState = UpdateUiState.Error(e.message ?: "检查失败")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                updateState = UpdateUiState.Error("检查失败：${e.message ?: "未知错误"}")
+            }
+        }
+    }
+
+    fun startDownload(release: UpdateChecker.Release) {
+        val asset = UpdateChecker.findApkAsset(release)
+        if (asset == null) {
+            // 没有 APK 资产：给出 Release 网页入口
+            updateState = UpdateUiState.NoApk(release)
+            return
+        }
+        updateJob?.cancel()
+        updateJob = scope.launch {
+            updateState = UpdateUiState.Downloading(0)
+            try {
+                val apk = withContext(Dispatchers.IO) {
+                    UpdateChecker.downloadApk(context, asset) { pct ->
+                        // 下载协程里直接更新状态（Compose 快照状态线程安全）
+                        updateState = UpdateUiState.Downloading(pct)
+                    }
+                }
+                updateState = UpdateUiState.Idle
+                val launched = withContext(Dispatchers.Main) {
+                    UpdateChecker.installApk(context, apk)
+                }
+                if (!launched) {
+                    updateState = UpdateUiState.Error("无法调起安装界面，请到系统设置允许「安装未知应用」后重试")
+                }
+            } catch (e: UpdateException) {
+                updateState = UpdateUiState.Error(e.message ?: "下载失败")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                updateState = UpdateUiState.Idle
+                throw e
+            } catch (e: Exception) {
+                updateState = UpdateUiState.Error("下载失败：${e.message ?: "未知错误"}")
+            }
+        }
+    }
 
     val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
 
@@ -341,7 +450,7 @@ fun SettingsScreen(
                     M3Card {
                         Column(Modifier.padding(16.dp)) {
                             Text(
-                                "作业板 v0.40.1",
+                                "作业板 v${BuildConfig.VERSION_NAME}",
                                 style = MaterialTheme.typography.titleMedium,
                                 color = cs.onSurface,
                             )
@@ -359,6 +468,28 @@ fun SettingsScreen(
                                 color = cs.onSurfaceVariant,
                             )
                         }
+                        HorizontalDivider(color = cs.outlineVariant.copy(alpha = 0.5f))
+                        // 检查更新：GitHub Releases（最新正式版）为更新来源
+                        ListItem(
+                            headlineContent = { Text("检查更新") },
+                            supportingContent = {
+                                Text(updateSubtitle(updateState))
+                            },
+                            trailingContent = {
+                                FilledTonalButton(
+                                    onClick = {
+                                        if (updateState is UpdateUiState.Idle ||
+                                            updateState is UpdateUiState.Error
+                                        ) startUpdateCheck()
+                                    },
+                                    enabled = updateState is UpdateUiState.Idle ||
+                                        updateState is UpdateUiState.Error,
+                                ) {
+                                    Text(if (updateState is UpdateUiState.Checking) "…" else "检查")
+                                }
+                            },
+                            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                        )
                     }
                 }
             }
@@ -383,6 +514,151 @@ fun SettingsScreen(
                 TextButton(onClick = { confirmLogout = false }) { Text("取消") }
             },
         )
+    }
+
+    // ================================================================== 检查更新对话框
+    when (val st = updateState) {
+        is UpdateUiState.Available -> {
+            val apkAsset = UpdateChecker.findApkAsset(st.release)
+            AlertDialog(
+                onDismissRequest = { updateState = UpdateUiState.Idle },
+                title = { Text("发现新版本") },
+                text = {
+                    Column {
+                        Text(
+                            "当前版本 v${BuildConfig.VERSION_NAME}　→　" +
+                                "最新版本 ${st.release.tagName}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = cs.onSurface,
+                        )
+                        st.release.publishedText?.let {
+                            Spacer(Modifier.height(2.dp))
+                            Text(
+                                "发布时间：$it",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = cs.onSurfaceVariant,
+                            )
+                        }
+                        if (st.release.changelog.isNotBlank()) {
+                            Spacer(Modifier.height(10.dp))
+                            Text(
+                                "更新日志",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = cs.primary,
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                st.release.changelog,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = cs.onSurfaceVariant,
+                                modifier = Modifier
+                                    .heightIn(max = 300.dp)
+                                    .verticalScroll(rememberScrollState()),
+                            )
+                        }
+                        if (apkAsset == null) {
+                            Spacer(Modifier.height(10.dp))
+                            Text(
+                                "这个 Release 没有附带 APK 安装包，可到 Release 页面手动下载。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = cs.onSurfaceVariant,
+                            )
+                        }
+                    }
+                },
+                confirmButton = {
+                    if (apkAsset != null) {
+                        TextButton(onClick = {
+                            updateState = UpdateUiState.Idle
+                            startDownload(st.release)
+                        }) { Text("立即更新") }
+                    } else {
+                        TextButton(onClick = {
+                            updateState = UpdateUiState.Idle
+                            runCatching {
+                                context.startActivity(
+                                    Intent(Intent.ACTION_VIEW, Uri.parse(st.release.htmlUrl)),
+                                )
+                            }
+                        }) { Text("打开 Release 页面") }
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { updateState = UpdateUiState.Idle }) {
+                        Text("暂不更新")
+                    }
+                },
+            )
+        }
+
+        is UpdateUiState.Downloading -> AlertDialog(
+            onDismissRequest = {},
+            title = { Text("正在下载更新") },
+            text = {
+                Column {
+                    LinearProgressIndicator(
+                        progress = { st.progress / 100f },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "${st.progress}%",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = cs.onSurfaceVariant,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    updateJob?.cancel()
+                    updateState = UpdateUiState.Idle
+                }) { Text("取消") }
+            },
+        )
+
+        is UpdateUiState.UpToDate -> AlertDialog(
+            onDismissRequest = { updateState = UpdateUiState.Idle },
+            title = { Text("当前已是最新版本") },
+            text = { Text("当前版本 v${BuildConfig.VERSION_NAME} 就是 GitHub 上的最新正式版。") },
+            confirmButton = {
+                TextButton(onClick = { updateState = UpdateUiState.Idle }) { Text("好的") }
+            },
+        )
+
+        is UpdateUiState.Error -> AlertDialog(
+            onDismissRequest = { updateState = UpdateUiState.Idle },
+            title = { Text("检查更新失败") },
+            text = { Text(st.message) },
+            confirmButton = {
+                TextButton(onClick = { startUpdateCheck() }) { Text("重试") }
+            },
+            dismissButton = {
+                TextButton(onClick = { updateState = UpdateUiState.Idle }) { Text("关闭") }
+            },
+        )
+
+        is UpdateUiState.NoApk -> AlertDialog(
+            onDismissRequest = { updateState = UpdateUiState.Idle },
+            title = { Text("没有可安装的 APK") },
+            text = { Text("最新 Release 没有附带 APK 资产，可到 GitHub Release 页面查看和手动下载。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    updateState = UpdateUiState.Idle
+                    runCatching {
+                        context.startActivity(
+                            Intent(Intent.ACTION_VIEW, Uri.parse(st.release.htmlUrl)),
+                        )
+                    }
+                }) { Text("打开 Release 页面") }
+            },
+            dismissButton = {
+                TextButton(onClick = { updateState = UpdateUiState.Idle }) { Text("暂不") }
+            },
+        )
+
+        UpdateUiState.Checking,
+        UpdateUiState.Idle,
+        -> Unit
     }
 
 }
