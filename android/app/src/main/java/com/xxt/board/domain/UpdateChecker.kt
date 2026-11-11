@@ -2,17 +2,32 @@ package com.xxt.board.domain
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageInfo
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import androidx.core.content.FileProvider
+import androidx.core.content.pm.PackageInfoCompat
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.IOException
+import java.security.MessageDigest
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 /**
  * GitHub Releases 检查更新（复用项目现有的 OkHttp，零新增依赖）。
@@ -75,28 +90,51 @@ object UpdateChecker {
     // ---------------------------------------------------------------- API
 
     /**
-     * 拉取最新正式 Release。失败（网络 / 限流 / 无 Release）抛 [UpdateException]，
-     * UI 层负责提示，不 here 崩溃。
+     * 拉取最新正式 Release。网络、限流、响应格式错误均抛出明确异常，
+     * UI 不得把这些失败折叠成“已是最新版本”。
      */
-    fun fetchLatestRelease(): Release {
+    fun fetchLatestRelease(): Release = try {
         val request = Request.Builder()
             .url(LATEST_URL)
             .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
             .header("User-Agent", "xuexitong-tool-app")
             .build()
         http.newCall(request).execute().use { response ->
             when {
                 response.code == 404 ->
                     throw UpdateException("仓库还没有正式发布（Release）")
+                response.code == 429 ||
+                    (response.code == 403 && response.header("X-RateLimit-Remaining") == "0") ->
+                    throw UpdateException("GitHub API 请求过于频繁，请稍后重试（HTTP ${response.code}）")
                 !response.isSuccessful ->
-                    throw UpdateException("GitHub 返回 ${response.code}")
+                    throw UpdateException("GitHub 请求失败（HTTP ${response.code}）")
             }
             val body = response.body?.string() ?: throw UpdateException("GitHub 返回空响应")
-            return parseRelease(JSONObject(body))
+            try {
+                parseRelease(JSONObject(body))
+            } catch (e: UpdateException) {
+                throw e
+            } catch (e: Exception) {
+                throw UpdateException("GitHub 返回的 Release 数据无法解析", e)
+            }
         }
+    } catch (e: UpdateException) {
+        throw e
+    } catch (e: IOException) {
+        throw UpdateException("网络连接失败，请检查网络或代理后重试", e)
     }
 
     private fun parseRelease(obj: JSONObject): Release {
+        val tagName = obj.optString("tag_name").trim()
+        val htmlUrl = obj.optString("html_url").trim()
+        if (tagName.isEmpty() || htmlUrl.isEmpty()) {
+            throw UpdateException("Release 缺少版本号或发布页面")
+        }
+        // 防御性检查：即使用户代理之外的 API 实现误返回预发布，也不作为正式版更新。
+        if (obj.optBoolean("draft") || obj.optBoolean("prerelease")) {
+            throw UpdateException("最新 Release 不是正式版本")
+        }
         val assetsJson = obj.optJSONArray("assets") ?: JSONArray()
         val assets = buildList {
             for (i in 0 until assetsJson.length()) {
@@ -111,104 +149,271 @@ object UpdateChecker {
             }
         }
         return Release(
-            tagName = obj.optString("tag_name"),
-            title = obj.optString("name", "").ifBlank { obj.optString("tag_name") },
+            tagName = tagName,
+            title = obj.optString("name", "").ifBlank { tagName },
             changelog = obj.optString("body", "").trim(),
             publishedAt = obj.optString("published_at").takeIf { it.isNotBlank() },
-            htmlUrl = obj.optString("html_url"),
+            htmlUrl = htmlUrl,
             assets = assets,
         )
     }
 
-    /** 从 Assets 里挑 APK：优先 release / arm64 通用包，排除明显不是安装包的命名 */
-    fun findApkAsset(release: Release): Asset? =
-        release.assets
-            .filter { it.name.lowercase().endsWith(".apk") }
-            .sortedWith(
-                compareByDescending<Asset> { it.name.lowercase().contains("release") }
-                    .thenByDescending { it.name.lowercase().contains("arm64") }
-                    .thenByDescending { it.sizeBytes }
-            )
-            .firstOrNull()
+    private val abiNames = listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
+
+    /**
+     * 只使用 API 返回的真实 browser_download_url。优先当前设备 ABI，其次通用包；
+     * 明确标注为其他 ABI、未签名或未对齐的包不参与选择。
+     */
+    fun findApkAsset(
+        release: Release,
+        supportedAbis: List<String> = Build.SUPPORTED_ABIS.toList(),
+    ): Asset? = release.assets.mapNotNull { asset ->
+        val name = asset.name.lowercase()
+        if (!name.endsWith(".apk") || asset.downloadUrl.isBlank() ||
+            "unsigned" in name || "unaligned" in name
+        ) return@mapNotNull null
+
+        val markedAbis = abiNames.filter { abi ->
+            val variants = when (abi) {
+                "arm64-v8a" -> listOf("arm64-v8a", "arm64_v8a", "arm64")
+                "armeabi-v7a" -> listOf("armeabi-v7a", "armeabi_v7a", "armv7")
+                else -> listOf(abi, abi.replace('_', '-'))
+            }
+            variants.any { marker ->
+                Regex("(^|[^a-z0-9_])${Regex.escape(marker)}($|[^a-z0-9_])").containsMatchIn(name)
+            }
+        }
+        if (markedAbis.size > 1) return@mapNotNull null
+        val markedAbi = markedAbis.singleOrNull()
+        val abiIndex = supportedAbis.indexOf(markedAbi)
+        if (markedAbi != null && abiIndex < 0) return@mapNotNull null
+
+        val abiScore = when {
+            markedAbi != null -> 2_000 - abiIndex
+            else -> 1_000 // 无 ABI 标记的 APK 按通用包处理，下载后仍会严格校验。
+        }
+        val releaseScore = if ("release" in name) 100 else 0
+        val debugPenalty = if ("debug" in name) 50 else 0
+        Triple(asset, abiScore + releaseScore - debugPenalty, asset.downloadUrl)
+    }.sortedWith(
+        compareByDescending<Triple<Asset, Int, String>> { it.second }
+            .thenBy { it.third }, // 同分时保持稳定，不用文件大小猜测正确包。
+    ).firstOrNull()?.first
 
     // ---------------------------------------------------------------- 版本比较
 
-    /**
-     * 语义化比较版本号：逐段按数字比较（0.40.10 > 0.40.9），段数不足补 0，
-     * 前缀 v/V 与后缀（如 -beta）忽略。返回 >0 表示 [latest] 更新。
-     */
+    private data class SemanticVersion(val core: List<String>, val prerelease: List<String>)
+
+    /** 按 SemVer 2.0 比较；允许省略后续核心段并补 0，忽略构建元数据。 */
     fun compareVersions(current: String, latest: String): Int {
-        val a = segment(current)
-        val b = segment(latest)
-        val n = maxOf(a.size, b.size)
-        for (i in 0 until n) {
-            val x = a.getOrElse(i) { 0 }
-            val y = b.getOrElse(i) { 0 }
-            if (x != y) return x.compareTo(y)
+        // 返回值始终以 latest 相对 current 为准：> 0 才表示有更新。
+        val a = semanticVersion(latest)
+        val b = semanticVersion(current)
+        for (i in 0 until maxOf(a.core.size, b.core.size)) {
+            val result = compareNumeric(a.core.getOrElse(i) { "0" }, b.core.getOrElse(i) { "0" })
+            if (result != 0) return result
+        }
+        if (a.prerelease.isEmpty() || b.prerelease.isEmpty()) {
+            return when {
+                a.prerelease.isEmpty() && b.prerelease.isEmpty() -> 0
+                a.prerelease.isEmpty() -> 1 // 正式版高于同核心版本的预发布版。
+                else -> -1
+            }
+        }
+        for (i in 0 until maxOf(a.prerelease.size, b.prerelease.size)) {
+            val x = a.prerelease.getOrNull(i) ?: return -1
+            val y = b.prerelease.getOrNull(i) ?: return 1
+            val xNumeric = x.all(Char::isDigit)
+            val yNumeric = y.all(Char::isDigit)
+            val result = when {
+                xNumeric && yNumeric -> compareNumeric(x, y)
+                xNumeric != yNumeric -> if (xNumeric) -1 else 1
+                else -> x.compareTo(y)
+            }
+            if (result != 0) return result
         }
         return 0
     }
 
-    /** "v0.40.1-beta" → [0, 40, 1]（非数字尾巴丢弃；解析失败的段按 0 处理） */
-    private fun segment(version: String): List<Int> =
-        version.trim().removePrefix("v").removePrefix("V")
-            .substringBefore('-')
-            .split('.')
-            .map { it.filter(Char::isDigit).takeIf { s -> s.isNotEmpty() }?.toIntOrNull() ?: 0 }
+    private fun semanticVersion(version: String): SemanticVersion {
+        val normalized = version.trim().removePrefix("v").removePrefix("V").substringBefore('+')
+        val parts = normalized.split('-', limit = 2)
+        val core = parts[0].split('.')
+        val prerelease = parts.getOrElse(1) { "" }.split('.').filter { it.isNotEmpty() }
+        val valid = core.isNotEmpty() && core.all { it.isNotEmpty() && it.all(Char::isDigit) } &&
+            (parts.size == 1 || (prerelease.isNotEmpty() && parts[1].split('.').size == prerelease.size)) &&
+            prerelease.all { id -> id.all { it.isLetterOrDigit() || it == '-' } }
+        if (!valid) throw UpdateException("无法解析版本号：$version")
+        return SemanticVersion(core, prerelease)
+    }
+
+    /** 不使用 Int/Long，避免超大版本段溢出；先比有效位数，再比字典序。 */
+    private fun compareNumeric(a: String, b: String): Int {
+        val x = a.trimStart('0').ifEmpty { "0" }
+        val y = b.trimStart('0').ifEmpty { "0" }
+        return if (x.length != y.length) x.length.compareTo(y.length) else x.compareTo(y)
+    }
 
     // ---------------------------------------------------------------- 下载 & 安装
 
     /**
-     * 下载 APK 到 [updateDir]，[onProgress] 回调 0..100（仍在 IO 线程回调）。
-     * 返回下载完成的文件；失败抛 [UpdateException]。
+     * 下载到临时文件，确认响应完整后再改成 APK。协程取消会同时取消 OkHttp 请求，
+     * 不会留下可被误安装的半截安装包。
      */
-    fun downloadApk(context: Context, asset: Asset, onProgress: (Int) -> Unit): File {
-        val dir = updateDir(context).apply { mkdirs() }
-        // 先清掉旧包，避免同目录越积越多
-        dir.listFiles()?.forEach { it.delete() }
-        val target = File(dir, asset.name.substringAfterLast('/').ifBlank { "update.apk" })
-
-        val request = Request.Builder()
-            .url(asset.downloadUrl)
-            .header("User-Agent", "xuexitong-tool-app")
-            .build()
-        downloadHttp.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                throw UpdateException("下载失败：GitHub 返回 ${response.code}")
-            }
-            val total = (response.body?.contentLength() ?: -1L).takeIf { it > 0 }
-                ?: asset.sizeBytes
-            response.body?.byteStream()?.use { input ->
-                target.outputStream().use { output ->
-                    val buf = ByteArray(64 * 1024)
-                    var read: Int
-                    var done = 0L
-                    var lastPct = -1
-                    while (input.read(buf).also { read = it } != -1) {
-                        output.write(buf, 0, read)
-                        done += read
-                        if (total > 0) {
-                            val pct = (done * 100L / total).toInt().coerceIn(0, 100)
-                            if (pct != lastPct) {
-                                lastPct = pct
-                                onProgress(pct)
+    suspend fun downloadApk(
+        context: Context,
+        asset: Asset,
+        onProgress: (Int) -> Unit,
+    ): File = withContext(Dispatchers.IO) {
+        val dir = updateDir(context).apply {
+            if (!exists() && !mkdirs()) throw UpdateException("无法创建更新包目录")
+        }
+        val fileName = asset.name.substringAfterLast('/').substringAfterLast('\\')
+            .ifBlank { "update.apk" }
+        val target = File(dir, fileName)
+        val partial = File(dir, "$fileName.part")
+        partial.delete()
+        onProgress(0)
+        try {
+            val request = Request.Builder()
+                .url(asset.downloadUrl)
+                .header("User-Agent", "xuexitong-tool-app")
+                .build()
+            downloadHttp.newCall(request).awaitResponse().use { response ->
+                if (!response.isSuccessful) {
+                    throw UpdateException("下载失败：GitHub 返回 HTTP ${response.code}")
+                }
+                val body = response.body ?: throw UpdateException("下载中断：响应为空")
+                val responseSize = body.contentLength()
+                val expectedSize = asset.sizeBytes.takeIf { it > 0 }
+                if (expectedSize != null && responseSize > 0 && expectedSize != responseSize) {
+                    throw UpdateException("下载失败：服务器文件大小与 Release 不一致")
+                }
+                val total = expectedSize ?: responseSize
+                var done = 0L
+                body.byteStream().use { input ->
+                    partial.outputStream().use { output ->
+                        val buffer = ByteArray(64 * 1024)
+                        var lastPct = 0
+                        while (true) {
+                            ensureActive()
+                            val read = input.read(buffer)
+                            if (read < 0) break
+                            output.write(buffer, 0, read)
+                            done += read
+                            if (total > 0) {
+                                val pct = (done * 100L / total).toInt().coerceIn(0, 99)
+                                if (pct != lastPct) {
+                                    lastPct = pct
+                                    onProgress(pct)
+                                }
                             }
                         }
                     }
                 }
-            } ?: throw UpdateException("下载中断：响应为空")
+                if ((expectedSize != null && done != expectedSize) ||
+                    (responseSize > 0 && done != responseSize)
+                ) {
+                    throw UpdateException("下载不完整，请重试")
+                }
+            }
+            ensureActive()
+            if (target.exists() && !target.delete()) {
+                throw UpdateException("无法替换旧的更新包")
+            }
+            if (!partial.renameTo(target)) {
+                throw UpdateException("无法保存已下载的更新包")
+            }
+            onProgress(100)
+            target
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            partial.delete()
+            throw e
+        } catch (e: UpdateException) {
+            partial.delete()
+            throw e
+        } catch (e: IOException) {
+            partial.delete()
+            throw UpdateException("下载失败：网络连接中断，请重试", e)
         }
-        return target
     }
 
-    /**
-     * 调起系统安装界面（用户确认，不做任何静默安装）。
-     * 未授予「安装未知应用」时系统会自行引导；连安装器都拉不起来时，
-     * 跳到本应用的「安装未知应用」设置页。
-     *
-     * @return true = 已拉起安装界面
-     */
-    fun installApk(context: Context, file: File): Boolean {
+    private suspend fun Call.awaitResponse(): Response = suspendCancellableCoroutine { continuation ->
+        continuation.invokeOnCancellation { cancel() }
+        enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                continuation.resumeWithException(e)
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                continuation.resume(response) { _, value, _ -> value.close() }
+            }
+        })
+    }
+
+    /** 校验安装包身份、Release 版本、升级方向和当前应用签名。 */
+    @Suppress("DEPRECATION")
+    fun validateApk(context: Context, file: File, expectedVersion: String): PackageInfo {
+        if (!file.isFile || file.length() == 0L) throw UpdateException("更新包不存在或为空")
+        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            PackageManager.GET_SIGNING_CERTIFICATES
+        } else {
+            PackageManager.GET_SIGNATURES
+        }
+        val pm = context.packageManager
+        val archive = pm.getPackageArchiveInfo(file.absolutePath, flags)
+            ?: throw UpdateException("更新包不是有效的 APK")
+        if (archive.packageName != context.packageName) {
+            throw UpdateException("更新包包名不匹配：${archive.packageName ?: "未知"}")
+        }
+        val archiveVersion = archive.versionName
+            ?: throw UpdateException("更新包没有版本号")
+        if (compareVersions(archiveVersion, expectedVersion) != 0) {
+            throw UpdateException("更新包版本 $archiveVersion 与 Release $expectedVersion 不一致")
+        }
+        val installed = pm.getPackageInfo(context.packageName, flags)
+        val archiveCode = PackageInfoCompat.getLongVersionCode(archive)
+        val installedCode = PackageInfoCompat.getLongVersionCode(installed)
+        if (archiveCode <= installedCode) {
+            throw UpdateException("更新包 versionCode $archiveCode 不大于当前版本 $installedCode")
+        }
+        val archiveSigners = archive.signerDigests()
+        val installedSigners = installed.signerDigests()
+        if (archiveSigners.isEmpty() || archiveSigners != installedSigners) {
+            throw UpdateException("更新包签名与当前应用不一致")
+        }
+        return archive
+    }
+
+    @Suppress("DEPRECATION")
+    private fun PackageInfo.signerDigests(): Set<String> {
+        val certificates = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            signingInfo?.apkContentsSigners
+        } else {
+            signatures
+        }.orEmpty()
+        return certificates.map { signature ->
+            MessageDigest.getInstance("SHA-256").digest(signature.toByteArray())
+                .joinToString("") { "%02x".format(it) }
+        }.toSet()
+    }
+
+    fun canRequestPackageInstalls(context: Context): Boolean =
+        context.packageManager.canRequestPackageInstalls()
+
+    fun openUnknownAppSources(context: Context): Boolean = runCatching {
+        context.startActivity(
+            Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES)
+                .setData(Uri.parse("package:${context.packageName}"))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
+    }.isSuccess
+
+    enum class InstallResult { LAUNCHED, PERMISSION_REQUIRED, NO_INSTALLER }
+
+    /** 校验完成后才能调用；由系统安装器和用户完成最终确认。 */
+    fun installApk(context: Context, file: File): InstallResult {
+        if (!canRequestPackageInstalls(context)) return InstallResult.PERMISSION_REQUIRED
         val uri = FileProvider.getUriForFile(
             context, "${context.packageName}.fileprovider", file,
         )
@@ -216,20 +421,13 @@ object UpdateChecker {
             setDataAndType(uri, "application/vnd.android.package-archive")
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-        val launched = runCatching { context.startActivity(intent) }.isSuccess
-        if (!launched) {
-            // 系统没有可用的安装器（极端 ROM）：引导用户开「安装未知应用」
-            runCatching {
-                context.startActivity(
-                    Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES)
-                        .setData(Uri.parse("package:${context.packageName}"))
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                )
-            }
+        return if (runCatching { context.startActivity(intent) }.isSuccess) {
+            InstallResult.LAUNCHED
+        } else {
+            InstallResult.NO_INSTALLER
         }
-        return launched
     }
 }
 
-/** 检查更新链路上的一切失败，message 直接面向用户 */
-class UpdateException(message: String) : Exception(message)
+/** 检查更新链路上的一切失败，message 直接面向用户。 */
+class UpdateException(message: String, cause: Throwable? = null) : Exception(message, cause)

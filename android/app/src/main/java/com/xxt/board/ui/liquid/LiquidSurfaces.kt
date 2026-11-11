@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.GraphicsLayerScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.ui.draw.clip
 import kotlin.math.tanh
@@ -63,6 +64,8 @@ fun LiquidGlassButton(
     contentPadding: PaddingValues? = null,
     surfaceVisible: Boolean = true,
     subdued: Boolean = false,
+    feedbackPressure: (() -> Float)? = null,
+    feedbackLayer: (GraphicsLayerScope.() -> Unit)? = null,
     content: @Composable RowScope.() -> Unit,
 ) {
     val p = LocalPaper.current
@@ -70,7 +73,7 @@ fun LiquidGlassButton(
     // Backdrop lens requires a CornerBasedShape. M3 segmented buttons can supply a wrapper Shape.
     val lensShape = buttonShape as? CornerBasedShape ?: RoundedCornerShape(50)
     val scope = rememberCoroutineScope()
-    val light = remember(scope) { InteractiveHighlight(scope) }
+    val light = remember(scope, feedbackPressure) { InteractiveHighlight(scope, pressure = feedbackPressure) }
     val selection by animateFloatAsState(
         if (selected == true) 1f else 0f, spring(0.8f, 600f), label = "glass.selection",
     )
@@ -93,6 +96,7 @@ fun LiquidGlassButton(
                     translationY = maxOffset * tanh(0.05f * light.offset.y / maxOffset)
                     scaleX = scale
                     scaleY = scale
+                    feedbackLayer?.invoke(this)
                 },
                 onDrawSurface = {
                     drawRect(p.card.copy(alpha =material.surfaceAlpha( if(subdued) {if(p.dark)0.34f else 0.30f} else if (p.dark) 0.54f else 0.50f)))

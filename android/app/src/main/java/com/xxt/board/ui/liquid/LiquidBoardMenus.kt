@@ -55,10 +55,10 @@ class LiquidBoardMenuState {
     var sourceAnchor by mutableStateOf(Rect.Zero)
         private set
     var model by mutableStateOf<GlassBoardModel?>(null)
-    fun open(menu: GlassMenu) {
+    fun open(menu: GlassMenu, visualAnchor: Rect? = null) {
         if(progress.value>0f && displayed!=menu)return
         displayed = menu
-        sourceAnchor = if (menu == GlassMenu.TYPE) typeAnchor else filterAnchor
+        sourceAnchor = visualAnchor ?: if (menu == GlassMenu.TYPE) typeAnchor else filterAnchor
         active = menu
     }
     fun ownsEntry(menu: GlassMenu): Boolean = displayed == menu && (active != null || progress.value > 0f)
@@ -99,11 +99,22 @@ fun LiquidBoardMenus(state: LiquidBoardMenuState, backdrop: Backdrop, modifier: 
     val progress=state.progress.value.coerceIn(0f,1f)
     if(state.active==null && progress==0f) return
     val displayed=state.displayed
+    val scope=rememberCoroutineScope()
+    val drag=remember(state,displayed,density) {
+        MenuDragFeedback(scope,with(density){9.dp.toPx()}) {
+            state.active==displayed && state.progress.value>0.9f
+        }
+    }
+    DisposableEffect(drag) { onDispose { drag.reset() } }
+    LaunchedEffect(state.active,drag) { if(state.active==null)drag.finish(cancelled=true) }
     val safeTop=WindowInsets.statusBars.asPaddingValues().calculateTopPadding()+8.dp
     val safeBottom=WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()+12.dp
     var origin by remember { mutableStateOf(Offset.Zero) }
     var target by remember { mutableStateOf(Rect.Zero) }
-    val anchor=state.sourceAnchor.translate(-origin)
+    val entryAnchor = if (state.active == null) {
+        if (displayed == GlassMenu.TYPE) state.typeAnchor else state.filterAnchor
+    } else state.sourceAnchor
+    val anchor=entryAnchor.translate(-origin)
     val morph=morphGlassBounds(anchor,target.takeIf{it.width>0}?:anchor,progress)
     val radiusPx=lerp(anchor.height/2,with(density){24.dp.toPx()},progress)
     val shape=RoundedCornerShape(with(density){radiusPx.toDp()})
@@ -124,6 +135,7 @@ fun LiquidBoardMenus(state: LiquidBoardMenuState, backdrop: Backdrop, modifier: 
             ))
             // Full-size menu typography never undergoes nonuniform scaling.
             MorphMenuColumn(progress,anchor.center-target.topLeft-Offset(with(density){16.dp.toPx()},with(density){16.dp.toPx()}),Modifier
+                .then(drag.modifier)
                 .drawWithContent {
                     val local=morph.translate(-target.topLeft)
                     val path=Path().apply{addRoundRect(RoundRect(local,CornerRadius(radiusPx)))}
@@ -160,9 +172,10 @@ fun LiquidBoardMenus(state: LiquidBoardMenuState, backdrop: Backdrop, modifier: 
             val surface=measurables[0].measure(Constraints.fixed(current.width.roundToInt().coerceAtLeast(1),current.height.roundToInt().coerceAtLeast(1)))
             val entry=measurables[2].measure(Constraints(maxWidth=anchor.width.roundToInt().coerceAtLeast(1),maxHeight=anchor.height.roundToInt().coerceAtLeast(1)))
             layout(constraints.maxWidth,constraints.maxHeight) {
-                surface.place(current.left.roundToInt(),current.top.roundToInt())
-                content.place(bounds.left.roundToInt(),bounds.top.roundToInt())
-                entry.place(current.left.roundToInt(),(current.top+(anchor.height-entry.height)/2).roundToInt())
+                val displacement=drag.offset
+                surface.place((current.left+displacement.x).roundToInt(),(current.top+displacement.y).roundToInt())
+                content.place((bounds.left+displacement.x).roundToInt(),(bounds.top+displacement.y).roundToInt())
+                entry.place((current.left+displacement.x).roundToInt(),(current.top+displacement.y+(anchor.height-entry.height)/2).roundToInt())
             }
         }
     }

@@ -37,6 +37,8 @@ class InteractiveHighlight(
     /** Physical pixels, independent from density; null preserves the original falloff. */
     val featherPx: Float? = null,
     val animationSpec: SpringSpec<Float>? = null,
+    /** Optional shared material clock; pointer coordinates remain owned by this highlight. */
+    val pressure: (() -> Float)? = null,
 ) {
 
     private val pressProgressAnimation = Animatable(0f, 0.001f)
@@ -48,7 +50,7 @@ class InteractiveHighlight(
     private var inactive by mutableStateOf(false)
     val isPressed: Boolean get() = held
     val touchPosition: Offset get() = fingerPosition
-    val pressProgress: Float get() = if(inactive) 0f else
+    val pressProgress: Float get() = pressure?.invoke()?.coerceIn(0f,1f) ?: if(inactive) 0f else
         maxOf(if(held)0.2f else 0f,pressProgressAnimation.value).coerceIn(0f,1f)
     val offset: Offset get() = (fingerPosition - startPosition) * pressProgress
     fun localPosition(size: Size): Offset = position(size,fingerPosition)
@@ -135,10 +137,10 @@ half4 main(float2 coord) {
             startPosition=down.position
             fingerPosition=down.position
             pressJob?.cancel()
-            pressJob=animationScope.launch {
+            pressJob=if (pressure == null) animationScope.launch {
                 pressProgressAnimation.snapTo(maxOf(pressProgressAnimation.value,0.2f))
                 pressProgressAnimation.animateTo(1f,animationSpec ?: spring(0.82f,650f,0.001f))
-            }
+            } else null
             try {
                 while(true) {
                     val event=awaitPointerEvent(PointerEventPass.Initial)
@@ -149,9 +151,9 @@ half4 main(float2 coord) {
             } finally {
                 held=false
                 pressJob?.cancel()
-                pressJob=animationScope.launch {
+                pressJob=if (pressure == null) animationScope.launch {
                     pressProgressAnimation.animateTo(0f,animationSpec ?: spring(0.72f,420f,0.001f))
-                }
+                } else null
             }
         }
     }

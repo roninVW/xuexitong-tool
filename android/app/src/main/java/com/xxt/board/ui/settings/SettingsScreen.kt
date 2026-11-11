@@ -1,7 +1,6 @@
 package com.xxt.board.ui.settings
 
 import android.content.Intent
-import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -20,18 +19,13 @@ import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.verticalScroll
 import com.xxt.board.ui.liquid.MaterialAlertDialog as AlertDialog
-import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.foundation.shape.RoundedCornerShape
 import com.xxt.board.ui.components.backdropSource
 import com.xxt.board.ui.components.GaussianTopBar
 import androidx.compose.material3.Card
@@ -48,8 +42,12 @@ import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
+import com.xxt.board.ui.liquid.LocalLiquidBackdrop
 import com.xxt.board.ui.liquid.MaterialSlider
 import com.xxt.board.ui.liquid.MaterialSwitch
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberCombinedBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -97,37 +95,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-
-// ================================================================ 检查更新状态机
-
-/** 检查更新的 UI 状态（Idle → Checking → UpToDate/Available/Error → …） */
-private sealed interface UpdateUiState {
-    data object Idle : UpdateUiState
-    data object Checking : UpdateUiState
-
-    /** GitHub 上有更新的正式 Release */
-    data class Available(val release: UpdateChecker.Release) : UpdateUiState
-
-    /** APK 下载中（0..100） */
-    data class Downloading(val progress: Int) : UpdateUiState
-
-    data object UpToDate : UpdateUiState
-
-    /** Release 没有附带 APK 资产 → 引导到 Release 页面 */
-    data class NoApk(val release: UpdateChecker.Release) : UpdateUiState
-
-    data class Error(val message: String) : UpdateUiState
-}
-
-private fun updateSubtitle(state: UpdateUiState): String = when (state) {
-    UpdateUiState.Idle -> "当前版本 v${BuildConfig.VERSION_NAME} · GitHub Release"
-    UpdateUiState.Checking -> "正在检查更新…"
-    is UpdateUiState.Available -> "发现新版本 ${state.release.tagName}，点击查看"
-    is UpdateUiState.Downloading -> "下载更新包中 ${state.progress}%"
-    UpdateUiState.UpToDate -> "当前已是最新版本"
-    is UpdateUiState.NoApk -> "最新 Release 未附带 APK"
-    is UpdateUiState.Error -> state.message
-}
 
 /** 考试色候选：和作业色拉开色相，一眼能区分「作业 / 考试」 */
 private val ExamSwatches = listOf(
@@ -226,44 +193,68 @@ fun SettingsScreen(
         }
     }
 
+    fun startInstall(release: UpdateChecker.Release, apk: java.io.File) {
+        when (UpdateChecker.installApk(context, apk)) {
+            UpdateChecker.InstallResult.LAUNCHED -> updateState = UpdateUiState.Idle
+            UpdateChecker.InstallResult.PERMISSION_REQUIRED -> {
+                updateState = UpdateUiState.InstallPermission(release, apk)
+                if (!UpdateChecker.openUnknownAppSources(context)) {
+                    updateState = UpdateUiState.Error(
+                        "无法打开「安装未知应用」设置，请在系统应用设置中手动允许",
+                        title = "无法安装更新",
+                    )
+                }
+            }
+            UpdateChecker.InstallResult.NO_INSTALLER -> updateState = UpdateUiState.Error(
+                "系统中没有可用的软件包安装器",
+                title = "无法安装更新",
+            )
+        }
+    }
+
     fun startDownload(release: UpdateChecker.Release) {
         val asset = UpdateChecker.findApkAsset(release)
         if (asset == null) {
-            // 没有 APK 资产：给出 Release 网页入口
             updateState = UpdateUiState.NoApk(release)
             return
         }
         updateJob?.cancel()
         updateJob = scope.launch {
             updateState = UpdateUiState.Downloading(0)
+            var failureTitle = "下载更新失败"
             try {
-                val apk = withContext(Dispatchers.IO) {
-                    UpdateChecker.downloadApk(context, asset) { pct ->
-                        // 下载协程里直接更新状态（Compose 快照状态线程安全）
-                        updateState = UpdateUiState.Downloading(pct)
-                    }
+                val apk = UpdateChecker.downloadApk(context, asset) { pct ->
+                    updateState = UpdateUiState.Downloading(pct)
                 }
-                updateState = UpdateUiState.Idle
-                val launched = withContext(Dispatchers.Main) {
-                    UpdateChecker.installApk(context, apk)
+                failureTitle = "更新包校验失败"
+                withContext(Dispatchers.IO) {
+                    UpdateChecker.validateApk(context, apk, release.version)
                 }
-                if (!launched) {
-                    updateState = UpdateUiState.Error("无法调起安装界面，请到系统设置允许「安装未知应用」后重试")
-                }
+                startInstall(release, apk)
             } catch (e: UpdateException) {
-                updateState = UpdateUiState.Error(e.message ?: "下载失败")
+                updateState = UpdateUiState.Error(e.message ?: failureTitle, title = failureTitle)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 updateState = UpdateUiState.Idle
                 throw e
             } catch (e: Exception) {
-                updateState = UpdateUiState.Error("下载失败：${e.message ?: "未知错误"}")
+                updateState = UpdateUiState.Error(
+                    e.message ?: "未知错误",
+                    title = failureTitle,
+                )
             }
         }
     }
 
     val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    // 弹窗与设置页同窗口；录制层只包含设置页，不包含弹窗自身，避免递归采样。
+    val updateSource = rememberLayerBackdrop()
+    val updateBackdrop = LocalLiquidBackdrop.current?.let { wallpaper ->
+        rememberCombinedBackdrop(wallpaper, updateSource)
+    }
 
+    Box(Modifier.fillMaxSize()) {
     Scaffold(
+        modifier = if (updateBackdrop != null) Modifier.layerBackdrop(updateSource) else Modifier,
         containerColor = Color.Transparent,
         topBar = {
             GaussianTopBar(blurRadius) {
@@ -631,149 +622,18 @@ fun SettingsScreen(
         )
     }
 
-    // ================================================================== 检查更新对话框
-    when (val st = updateState) {
-        is UpdateUiState.Available -> {
-            val apkAsset = UpdateChecker.findApkAsset(st.release)
-            AlertDialog(
-                onDismissRequest = { updateState = UpdateUiState.Idle },
-                title = { Text("发现新版本") },
-                text = {
-                    Column {
-                        Text(
-                            "当前版本 v${BuildConfig.VERSION_NAME}　→　" +
-                                "最新版本 ${st.release.tagName}",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = cs.onSurface,
-                        )
-                        st.release.publishedText?.let {
-                            Spacer(Modifier.height(2.dp))
-                            Text(
-                                "发布时间：$it",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = cs.onSurfaceVariant,
-                            )
-                        }
-                        if (st.release.changelog.isNotBlank()) {
-                            Spacer(Modifier.height(10.dp))
-                            Text(
-                                "更新日志",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = cs.primary,
-                            )
-                            Spacer(Modifier.height(4.dp))
-                            Text(
-                                st.release.changelog,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = cs.onSurfaceVariant,
-                                modifier = Modifier
-                                    .heightIn(max = 300.dp)
-                                    .verticalScroll(rememberScrollState()),
-                            )
-                        }
-                        if (apkAsset == null) {
-                            Spacer(Modifier.height(10.dp))
-                            Text(
-                                "这个 Release 没有附带 APK 安装包，可到 Release 页面手动下载。",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = cs.onSurfaceVariant,
-                            )
-                        }
-                    }
-                },
-                confirmButton = {
-                    if (apkAsset != null) {
-                        TextButton(onClick = {
-                            updateState = UpdateUiState.Idle
-                            startDownload(st.release)
-                        }) { Text("立即更新") }
-                    } else {
-                        TextButton(onClick = {
-                            updateState = UpdateUiState.Idle
-                            runCatching {
-                                context.startActivity(
-                                    Intent(Intent.ACTION_VIEW, Uri.parse(st.release.htmlUrl)),
-                                )
-                            }
-                        }) { Text("打开 Release 页面") }
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = { updateState = UpdateUiState.Idle }) {
-                        Text("暂不更新")
-                    }
-                },
-            )
-        }
-
-        is UpdateUiState.Downloading -> AlertDialog(
-            onDismissRequest = {},
-            title = { Text("正在下载更新") },
-            text = {
-                Column {
-                    LinearProgressIndicator(
-                        progress = { st.progress / 100f },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "${st.progress}%",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = cs.onSurfaceVariant,
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    updateJob?.cancel()
-                    updateState = UpdateUiState.Idle
-                }) { Text("取消") }
-            },
-        )
-
-        is UpdateUiState.UpToDate -> AlertDialog(
-            onDismissRequest = { updateState = UpdateUiState.Idle },
-            title = { Text("当前已是最新版本") },
-            text = { Text("当前版本 v${BuildConfig.VERSION_NAME} 就是 GitHub 上的最新正式版。") },
-            confirmButton = {
-                TextButton(onClick = { updateState = UpdateUiState.Idle }) { Text("好的") }
-            },
-        )
-
-        is UpdateUiState.Error -> AlertDialog(
-            onDismissRequest = { updateState = UpdateUiState.Idle },
-            title = { Text("检查更新失败") },
-            text = { Text(st.message) },
-            confirmButton = {
-                TextButton(onClick = { startUpdateCheck() }) { Text("重试") }
-            },
-            dismissButton = {
-                TextButton(onClick = { updateState = UpdateUiState.Idle }) { Text("关闭") }
-            },
-        )
-
-        is UpdateUiState.NoApk -> AlertDialog(
-            onDismissRequest = { updateState = UpdateUiState.Idle },
-            title = { Text("没有可安装的 APK") },
-            text = { Text("最新 Release 没有附带 APK 资产，可到 GitHub Release 页面查看和手动下载。") },
-            confirmButton = {
-                TextButton(onClick = {
-                    updateState = UpdateUiState.Idle
-                    runCatching {
-                        context.startActivity(
-                            Intent(Intent.ACTION_VIEW, Uri.parse(st.release.htmlUrl)),
-                        )
-                    }
-                }) { Text("打开 Release 页面") }
-            },
-            dismissButton = {
-                TextButton(onClick = { updateState = UpdateUiState.Idle }) { Text("暂不") }
-            },
-        )
-
-        UpdateUiState.Checking,
-        UpdateUiState.Idle,
-        -> Unit
+    UpdateDialogs(
+        state = updateState,
+        backdrop = updateBackdrop,
+        onStateChange = { updateState = it },
+        onDownload = ::startDownload,
+        onCancelDownload = {
+            updateJob?.cancel()
+            updateState = UpdateUiState.Idle
+        },
+        onRetry = ::startUpdateCheck,
+        onInstall = ::startInstall,
+    )
     }
 
 }

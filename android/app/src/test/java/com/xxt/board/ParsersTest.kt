@@ -255,7 +255,23 @@ class ParsersTest {
     }
 
     @Test
-    fun `取不到编号时退回标题且保持稳定`() {
+    fun `取不到编号时用标题加已知时间组合`() {
+        val current = Parsers.keyOf(
+            TaskType.WORK, "1", "章节测验", "/work/phone/task-work?courseId=1",
+            publishAt = 1000L, dueAt = 2000L,
+        )
+        val older = Parsers.keyOf(
+            TaskType.WORK, "1", "章节测验", "/work/phone/task-work?courseId=1",
+            publishAt = 900L, dueAt = 1800L,
+        )
+        val onlyDue = Parsers.keyOf(TaskType.EXAM, "1", "单元测验", "", dueAt = 3000L)
+        assertTrue(current != older)
+        assertTrue(current != onlyDue)
+        assertEquals("WORK|1|章节测验|p=1000|d=2000", current)
+    }
+
+    @Test
+    fun `没有任何稳定编号和时间的同名作业保持同一主键`() {
         val a = Parsers.keyOf(TaskType.WORK, "1", "章节测验", "/work/phone/task-work?courseId=1")
         val b = Parsers.keyOf(TaskType.WORK, "1", "章节测验", "")
         assertEquals(a, b)
@@ -278,5 +294,40 @@ class ParsersTest {
         val list = Parsers.workList(html, course)
         assertEquals(2, list.size)
         assertEquals(2, list.map { it.key }.distinct().size)
+    }
+
+    @Test
+    fun `没有编号时同名不同发布时间的作业也会保留`() {
+        val html = """
+            <dl>
+              <dt data="/work/phone/task-work?courseId=1" status="1">
+                <h3>章节测验</h3><p>发布时间：2026-10-01 08:00</p><b>未交</b>
+              </dt>
+              <dt data="/work/phone/task-work?courseId=1" status="4">
+                <h3>章节测验</h3><p>发布时间：2026-09-01 08:00</p><b>已完成</b>
+              </dt>
+            </dl>
+        """.trimIndent()
+
+        val list = Parsers.workList(html, course)
+        assertEquals(2, list.size)
+        assertEquals(2, list.map { it.key }.distinct().size)
+    }
+
+    @Test
+    fun `同名同时间的真正重复行只保留一条`() {
+        val html = """
+            <dl>
+              <dt data="/work/phone/task-work?courseId=1" status="1">
+                <h3>章节测验</h3><p>发布时间：2026-10-01 08:00</p><b>未交</b>
+              </dt>
+              <dt data="/work/phone/task-work?courseId=1" status="1">
+                <h3>章节测验</h3><p>发布时间：2026-10-01 08:00</p><b>未交</b>
+              </dt>
+            </dl>
+        """.trimIndent()
+
+        val list = Parsers.workList(html, course)
+        assertEquals(1, list.size)
     }
 }

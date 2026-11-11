@@ -14,8 +14,8 @@ android {
         applicationId = "com.xxt.board"
         minSdk = 26
         targetSdk = 36
-        versionCode = 48
-        versionName = "0.51.0"
+        versionCode = 49
+        versionName = "0.52.0"
         testInstrumentationRunner = "android.test.InstrumentationTestRunner"
         vectorDrawables { useSupportLibrary = true }
     }

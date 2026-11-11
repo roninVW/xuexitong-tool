@@ -306,9 +306,10 @@ private fun AppNav(
         ) {
             composable(Routes.MAIN) {
                 var tabName by rememberSaveable { mutableStateOf(AppTab.BOARD.name) }
-                val tab = AppTab.entries.firstOrNull { it.name == tabName } ?: AppTab.BOARD
+                val tab = AppTab.entries.firstOrNull { it.name == tabName && it.mainEntryVisible } ?: AppTab.BOARD
 
                 fun switchTab(next: AppTab) {
+                    if (!next.mainEntryVisible) return
                     if (next == tab) return
                     tabName = next.name
                 }

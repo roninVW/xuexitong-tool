@@ -58,6 +58,7 @@ class MenuTouchDeviceTest : InstrumentationTestCase() {
                 state.open(GlassMenu.FILTER)
             }
             instrumentation.waitForIdleSync();SystemClock.sleep(800)
+            assertPanelDragReturns("状态",state,GlassMenu.FILTER)
             val heading=findBounds {it.text?.toString()=="状态"}
             val headerDown=SystemClock.uptimeMillis()
             send(headerDown,MotionEvent.ACTION_DOWN,heading.center)
@@ -82,6 +83,7 @@ class MenuTouchDeviceTest : InstrumentationTestCase() {
             assertNull("close action still closes menu",state.active)
             instrumentation.runOnMainSync{state.open(GlassMenu.TYPE)}
             SystemClock.sleep(700)
+            assertPanelDragReturns("显示类型",state,GlassMenu.TYPE)
             tap(findBounds{it.text?.toString()?.contains("考试")==true}.center)
             SystemClock.sleep(650)
             assertEquals("type option fires once",1,types.get())
@@ -102,6 +104,23 @@ class MenuTouchDeviceTest : InstrumentationTestCase() {
         SystemClock.sleep(1000)
         return activity
     }
+    private fun assertPanelDragReturns(label:String,state:LiquidBoardMenuState,menu:GlassMenu) {
+        val original=findBounds{it.text?.toString()==label}
+        val down=SystemClock.uptimeMillis()
+        send(down,MotionEvent.ACTION_DOWN,original.center)
+        repeat(8) {index ->
+            send(down,MotionEvent.ACTION_MOVE,original.center+Offset((index+1)*20f,0f))
+            SystemClock.sleep(16)
+        }
+        val moved=findBounds{it.text?.toString()==label}
+        assertTrue("panel content follows its glass surface",moved.center.x-original.center.x>3f)
+        assertTrue("panel drag stays compact",moved.center.x-original.center.x<32f)
+        send(down,MotionEvent.ACTION_UP,original.center+Offset(160f,0f))
+        SystemClock.sleep(850)
+        val restored=findBounds{it.text?.toString()==label}
+        assertEquals("panel returns to original position",original.center.x,restored.center.x,2f)
+        assertEquals("dragging a heading does not dismiss",menu,state.active)
+    }
     private fun findBounds(predicate:(AccessibilityNodeInfo)->Boolean):Rect {
         var result:Rect?=null
         val observed=mutableListOf<String>()
@@ -115,6 +134,7 @@ class MenuTouchDeviceTest : InstrumentationTestCase() {
         }
         for (attempt in 0 until 15) {
             observed.clear()
+            instrumentation.uiAutomation.clearCache()
             instrumentation.uiAutomation.rootInActiveWindow?.let{visit(it);it.recycle()}
             if (result != null) break
             SystemClock.sleep(200)

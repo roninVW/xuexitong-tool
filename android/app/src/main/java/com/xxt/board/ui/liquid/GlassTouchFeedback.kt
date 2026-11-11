@@ -4,7 +4,9 @@ import androidx.compose.animation.core.spring
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.util.lerp
 import com.kyant.backdrop.BackdropEffectScope
 
 /** Dock's official feedback constants, shared with menu panels. */
@@ -21,11 +23,28 @@ internal fun BackdropEffectScope.glassPressLens(
         depthEffect=depthEffect,chromaticAberration=chromaticAberration)
 }
 
-/** Optical displacement affects only Backdrop's captured image, never menu/Dock layout. */
-internal fun DrawScope.drawGlassPressBackdrop(pressure: Float, focus: Offset, drawBackdrop: DrawScope.()->Unit) {
+/** Pressed Dock background shrinks to 90%; foreground icons and labels stay unscaled. */
+internal fun glassPressBackdropScale(pressure: Float): Float =
+    lerp(1f, 0.9f, pressure.coerceIn(0f, 1f))
+
+/** Optical transform affects only Backdrop's captured image, never menu/Dock layout. */
+internal fun DrawScope.drawGlassPressBackdrop(
+    pressure: Float,
+    focus: Offset,
+    drawBackdrop: DrawScope.()->Unit,
+) {
     val press=pressure.coerceIn(0f,1f)
     val amount=6.dp.toPx()*press
     val dx=((size.width/2f-focus.x)/size.width.coerceAtLeast(1f)).coerceIn(-0.5f,0.5f)*amount
     val dy=((size.height/2f-focus.y)/size.height.coerceAtLeast(1f)).coerceIn(-0.5f,0.5f)*amount
-    translate(dx,dy){drawBackdrop()}
+    val scale=glassPressBackdropScale(press)
+    if (scale == 1f && dx == 0f && dy == 0f) {
+        drawBackdrop()
+        return
+    }
+    withTransform({
+        translate(dx+size.width/2f,dy+size.height/2f)
+        scale(scale,scale)
+        translate(-size.width/2f,-size.height/2f)
+    }) { drawBackdrop() }
 }

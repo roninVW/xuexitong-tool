@@ -638,7 +638,7 @@ fun PaperDock(
             .shadow(8.dp, dockShape, clip = false),
     ) {
         Row(Modifier.fillMaxWidth().fillMaxHeight(), verticalAlignment = Alignment.CenterVertically) {
-            AppTab.entries.forEach { tab ->
+            com.xxt.board.ui.MainDockTabs.forEach { tab ->
                 val active = tab == selected
                 val indicator by animateColorAsState(
                     targetValue = if (active) cs.secondaryContainer else Color.Transparent,

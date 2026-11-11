@@ -22,17 +22,19 @@ object Parsers {
             val action = el.selectFirst("b")?.text()?.trim().orEmpty()
             val itemText = el.text()
             val status = statusOf(el.attr("status").toIntOrNull(), action)
+            val publishAt = parseTime(el.selectFirst("p")?.text()) ?: parseTime(itemText)
+            val dueAt = grabTime(itemText, DUE_KEYS)
             Task(
-                key = keyOf(TaskType.WORK, course.courseId, title, rawUrl),
+                key = keyOf(TaskType.WORK, course.courseId, title, rawUrl, publishAt, dueAt),
                 type = TaskType.WORK,
                 courseId = course.courseId,
                 classId = course.classId,
                 courseName = course.name,
                 title = title,
                 status = status,
-                publishAt = parseTime(el.selectFirst("p")?.text()) ?: parseTime(itemText),
+                publishAt = publishAt,
                 // 少数学校列表页就带截止时间，先抓一次，抓不到再进详情
-                dueAt = grabTime(itemText, DUE_KEYS),
+                dueAt = dueAt,
                 submittedAt = null,
                 gradedAt = null,
                 // 作业也会带分数：列表页可能写在属性里（score/data-score）、行内小标签（<b>95分</b>）
@@ -40,7 +42,7 @@ object Parsers {
                 score = scoreFromElement(el, itemText),
                 url = normalizeUrl(rawUrl),
             )
-        }
+        }.distinctBy { it.key }
 
     fun examList(html: String, course: Course): List<Task> =
         Jsoup.parse(html).select("tr[data]").mapNotNull { tr ->
@@ -59,8 +61,9 @@ object Parsers {
                 ?.removeSuffix("分")
                 ?.trim()
             val score = scoreCell ?: scoreFromElement(tr, tr.text())
+            val dueAt = grabTime(tr.text(), DUE_KEYS)
             Task(
-                key = keyOf(TaskType.EXAM, course.courseId, title, rawUrl),
+                key = keyOf(TaskType.EXAM, course.courseId, title, rawUrl, publishAt = null, dueAt = dueAt),
                 type = TaskType.EXAM,
                 courseId = course.courseId,
                 classId = course.classId,
@@ -68,14 +71,14 @@ object Parsers {
                 title = title,
                 status = status,
                 publishAt = null,
-                dueAt = grabTime(tr.text(), DUE_KEYS),
+                dueAt = dueAt,
                 submittedAt = null,
                 gradedAt = null,
                 // 已交 / 已批阅就存分数；未做的行即使有数字也不当成绩
                 score = if (status == TaskStatus.GRADED || status == TaskStatus.SUBMITTED) score else null,
                 url = normalizeUrl(rawUrl),
             )
-        }
+        }.distinctBy { it.key }
 
     // ---------------------------------------------------------------- 详情
 
@@ -248,13 +251,26 @@ object Parsers {
     /**
      * 任务主键。
      *
-     * 只用「类型 + 课程 + 标题」会撞车：同一门课里「第 3 章作业」「章节测验」这类标题
-     * 每周都重复，后来的会把前面的覆盖掉，表现就是「早一点的作业莫名消失」。
-     * 所以优先用链接里的 workId / examId 这类稳定编号，取不到才退回标题。
+     * 优先用链接里的 workId / examId / activeId 等稳定编号；没有稳定编号时不能只用标题，
+     * 否则同名但不同批次的作业会互相覆盖。退回键使用标题 + 已知发布/截止时间组合；
+     * 两个都拿不到时只剩标题可用的稳定信息，解析层仍按该键去重，避免完全重复行。
      */
-    fun keyOf(type: TaskType, courseId: String, title: String, url: String = ""): String {
+    fun keyOf(
+        type: TaskType,
+        courseId: String,
+        title: String,
+        url: String = "",
+        publishAt: Long? = null,
+        dueAt: Long? = null,
+    ): String {
         val id = idOf(url)
-        return if (id != null) "${type.name}|$courseId|#$id" else "${type.name}|$courseId|${title.trim()}"
+        if (id != null) return "${type.name}|$courseId|#$id"
+        val identity = buildString {
+            append(title.trim())
+            publishAt?.let { append("|p=$it") }
+            dueAt?.let { append("|d=$it") }
+        }
+        return "${type.name}|$courseId|$identity"
     }
 
     private val ID_PARAM = Regex(

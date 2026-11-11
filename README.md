@@ -93,7 +93,7 @@
 ## 安装
 
 1. 到 [Releases](https://github.com/roninVW/xuexitong-tool/releases/latest) 下载最新 `xuexitong-tool-*.apk`
-   （当前版本：[v0.51.0 直接下载](https://github.com/roninVW/xuexitong-tool/releases/download/v0.51.0/xuexitong-tool-v0.51.0.apk)）
+   （当前版本：[v0.52.0 直接下载](https://github.com/roninVW/xuexitong-tool/releases/download/v0.52.0/xuexitong-tool-v0.52.0.apk)）
 2. 允许「安装未知来源应用」后安装（自签名包，未上架任何应用商店，也不可能过审）
 3. 打开 → 在登录页正常登录学习通 → 返回看板 → 下拉同步
 

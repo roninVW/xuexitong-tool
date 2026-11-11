@@ -129,7 +129,7 @@ import com.xxt.board.ui.liquid.LiquidBoardMenuState
 import com.xxt.board.ui.liquid.GlassBoardModel
 import com.xxt.board.ui.liquid.GlassMenuChoice
 import com.xxt.board.ui.liquid.GlassMenu
-import com.xxt.board.ui.liquid.LiquidGlassButton
+import com.xxt.board.ui.liquid.LiquidMenuEntry
 
 class BoardViewModel(
     dao: BoardDao,
@@ -471,10 +471,8 @@ fun BoardScreen(
                 },
                 onTitleClick = { typeMenu = true },
                 titleContent = if (entryGlass != null && glassMenus != null) ({
-                    LiquidGlassButton(
-                        backdrop = entryGlass, onClick = { glassMenus.open(GlassMenu.TYPE) }, compact = true,
-                        surfaceVisible = !glassMenus.ownsEntry(GlassMenu.TYPE), subdued = true,
-                        modifier = Modifier.onGloballyPositioned { glassMenus.typeAnchor = it.boundsInRoot() },
+                    LiquidMenuEntry(
+                        backdrop = entryGlass, state = glassMenus, menu = GlassMenu.TYPE,
                     ) {
                         Text(when (type) { TaskType.EXAM -> "考试"; TaskType.WORK -> "作业"; null -> "全部" },
                             style = PaperType.screenTitle, color = p.ink, maxLines = 1)
@@ -531,11 +529,9 @@ fun BoardScreen(
                 },
                 actions = {
                     if (entryGlass != null && glassMenus != null) {
-                        LiquidGlassButton(
-                            backdrop = entryGlass, onClick = { glassMenus.open(GlassMenu.FILTER) }, compact = true,
-                            surfaceVisible = !glassMenus.ownsEntry(GlassMenu.FILTER), subdued = true,
+                        LiquidMenuEntry(
+                            backdrop = entryGlass, state = glassMenus, menu = GlassMenu.FILTER,
                             selected = filterActive,
-                            modifier = Modifier.onGloballyPositioned { glassMenus.filterAnchor = it.boundsInRoot() },
                         ) {
                             Text(statusLabel(status), style = PaperType.groupName, color = p.ink, maxLines = 1)
                             Icon(AppIcons.ChevronDown, "状态与科目筛选", tint = p.ink2, modifier = Modifier.size(14.dp)
